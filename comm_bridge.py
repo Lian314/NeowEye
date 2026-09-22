@@ -16,6 +16,83 @@ from config import CONFIG
 
 logger = logging.getLogger("CommBridge")
 
+def sanitize_game_state(raw_data: Any) -> Dict[str, Any]:
+    """
+    Validates and sanitizes CommunicationMod protocol JSON payload.
+    Ensures safe fallbacks for missing/malformed fields across different game/mod versions.
+    """
+    if not isinstance(raw_data, dict):
+        logger.warning(f"Malformed raw_data received (not a dict): {type(raw_data)}")
+        return {"game_state": {}}
+
+    data = dict(raw_data)
+    game_state = data.get("game_state")
+    if not isinstance(game_state, dict):
+        game_state = {}
+        data["game_state"] = game_state
+
+    # Top-level state normalization
+    game_state.setdefault("floor", 1)
+    game_state.setdefault("act", 1)
+    game_state.setdefault("class", "IRONCLAD")
+    game_state.setdefault("current_hp", 80)
+    game_state.setdefault("max_hp", 80)
+    game_state.setdefault("gold", 99)
+    if not isinstance(game_state.get("deck"), list):
+        game_state["deck"] = []
+    if not isinstance(game_state.get("relics"), list):
+        game_state["relics"] = []
+    if not isinstance(game_state.get("screen_state"), dict):
+        game_state["screen_state"] = {}
+
+    # Combat state normalization
+    combat_state = game_state.get("combat_state")
+    if isinstance(combat_state, dict):
+        # Sanitize player
+        player = combat_state.get("player")
+        if not isinstance(player, dict):
+            player = {}
+            combat_state["player"] = player
+        player.setdefault("current_hp", game_state["current_hp"])
+        player.setdefault("max_hp", game_state["max_hp"])
+        player.setdefault("block", 0)
+        player.setdefault("energy", 3)
+        if not isinstance(player.get("powers"), list):
+            player["powers"] = []
+        if not isinstance(player.get("orbs"), list):
+            player["orbs"] = []
+
+        # Sanitize monsters
+        monsters = combat_state.get("monsters")
+        if not isinstance(monsters, list):
+            monsters = []
+            combat_state["monsters"] = monsters
+        valid_monsters = []
+        for m in monsters:
+            if isinstance(m, dict):
+                m.setdefault("current_hp", 0)
+                m.setdefault("max_hp", 1)
+                m.setdefault("block", 0)
+                m.setdefault("intent", "UNKNOWN")
+                m.setdefault("is_gone", False)
+                m.setdefault("half_dead", False)
+                if not isinstance(m.get("powers"), list):
+                    m["powers"] = []
+                valid_monsters.append(m)
+        combat_state["monsters"] = valid_monsters
+
+        # Sanitize hand, piles
+        for pile_key in ["hand", "draw_pile", "discard_pile", "exhaust_pile"]:
+            pile = combat_state.get(pile_key)
+            if not isinstance(pile, list):
+                combat_state[pile_key] = []
+            else:
+                combat_state[pile_key] = [c for c in pile if isinstance(c, dict)]
+
+        combat_state.setdefault("turn", 1)
+
+    return data
+
 class CommBridge:
     def __init__(self, config=None):
         self.config = config or CONFIG.comm
@@ -62,13 +139,14 @@ class CommBridge:
 
     def _handle_incoming_json(self, data: Dict[str, Any]):
         """Parses incoming CommunicationMod message and distributes to listeners."""
-        self.latest_raw_msg = data
-        game_state = data.get("game_state", {})
+        sanitized_data = sanitize_game_state(data)
+        self.latest_raw_msg = sanitized_data
+        game_state = sanitized_data.get("game_state", {})
         self.latest_game_state = game_state
 
         for listener in self.listeners:
             try:
-                listener(data)
+                listener(sanitized_data)
             except Exception as e:
                 logger.error(f"Error in CommBridge listener: {e}", exc_info=True)
 

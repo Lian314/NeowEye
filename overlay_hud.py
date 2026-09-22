@@ -366,6 +366,17 @@ class OverlayHUD:
         lbl_dmg = tk.Label(pred_frame, text=dmg_text, fg=dmg_fg, bg="#131620", font=("Microsoft YaHei UI", 9, "bold"), anchor="w")
         lbl_dmg.pack(fill="x")
 
+        if getattr(plan, "end_of_turn_forecast", None):
+            lbl_forecast = tk.Label(
+                pred_frame,
+                text=f"🔮 回合末结算: {' · '.join(plan.end_of_turn_forecast)}",
+                fg="#a29bfe",
+                bg="#131620",
+                font=("Microsoft YaHei UI", 8),
+                anchor="w"
+            )
+            lbl_forecast.pack(fill="x", pady=(1, 0))
+
         stat_parts = []
         if plan.monsters_killed > 0: stat_parts.append(f"💀 斩杀 {plan.monsters_killed} 敌")
         stat_parts.append(f"⚡ 剩余能量: {plan.remaining_energy}")

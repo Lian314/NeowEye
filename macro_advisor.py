@@ -12,7 +12,7 @@ Features:
 Queries the deployed Laya 421M decision model and parses structured decisions with confidence.
 """
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import logging
 from laya_client import LayaClient
 from card_db import resolve_card_info
@@ -35,6 +35,84 @@ class MacroDecision:
     deck_archetype: str = ""
     raw_response: Dict[str, Any] = field(default_factory=dict)
     latency_ms: float = 0.0
+
+class FallbackExpertEngine:
+    """Deterministic expert heuristic system that takes over when ONNX confidence is low or anomalous."""
+    TIER_S_CARDS = {
+        "Corruption", "Offering", "Feed", "Feel No Pain", "Immolate", "Battle Trance", "Demon Form", "Impervious",
+        "Wraith Form", "Adrenaline", "Corpse Explosion", "Catalyst", "Footwork", "Malaise", "After Image", "Leg Sweep",
+        "Echo Form", "Electrodynamics", "Defragment", "Biased Cognition", "Glacier", "Seek", "All For One",
+        "Rushdown", "Tantrum", "Vault", "Scrawl", "Mental Fortress", "Talk to the Hand", "Omniscience"
+    }
+
+    TIER_A_CARDS = {
+        "Carnage", "Flame Barrier", "Uppercut", "Shrug It Off", "Disarm", "Spot Weakness", "Reaper",
+        "Bouncing Flask", "Deadly Poison", "Bane", "Backflip", "Dash", "Piercing Wail", "Blade Dance",
+        "Ball Lightning", "Cold Snap", "Coolheaded", "Turbo", "Doom and Gloom", "Sunder", "Buffer",
+        "Cut Through Fate", "Fear No Evil", "Empty Fist", "Sanctity", "Swivel", "Wallop"
+    }
+
+    @classmethod
+    def evaluate_card_reward_fallback(
+        cls,
+        offered_cards: List[Dict[str, Any]],
+        deck_size: int,
+        archetype: str
+    ) -> Tuple[str, float, str]:
+        best_card = "Skip"
+        best_score = -10.0
+        for card in offered_cards:
+            name = card.get("name", card.get("id", "")).rstrip("+")
+            score = 50.0
+            if name in cls.TIER_S_CARDS:
+                score += 40.0
+            elif name in cls.TIER_A_CARDS:
+                score += 25.0
+
+            n_lower = name.lower()
+            if "poison" in archetype.lower() and ("poison" in n_lower or "catalyst" in n_lower or "flask" in n_lower):
+                score += 15.0
+            elif "shiv" in archetype.lower() and ("blade" in n_lower or "accuracy" in n_lower or "cloak" in n_lower or "shiv" in n_lower):
+                score += 15.0
+            elif "strength" in archetype.lower() and ("inflame" in n_lower or "spot" in n_lower or "heavy" in n_lower or "limit" in n_lower):
+                score += 15.0
+            elif "frost" in archetype.lower() and ("frost" in n_lower or "glacier" in n_lower or "cool" in n_lower):
+                score += 15.0
+            elif "lightning" in archetype.lower() and ("lightning" in n_lower or "electro" in n_lower or "storm" in n_lower or "thunder" in n_lower):
+                score += 15.0
+
+            if score > best_score:
+                best_score = score
+                best_card = name
+
+        if deck_size >= 22 and best_score < 70.0:
+            return "Skip", 0.65, "[专家规则接管] 牌库已达22+张且无S/A级质变牌，建议跳过(Skip)防臃肿"
+
+        conf = 0.60 if best_score >= 70.0 else 0.50
+        return best_card, conf, f"[专家规则接管] 推荐抓取高梯度核心牌【{best_card}】"
+
+    @classmethod
+    def evaluate_rest_site_fallback(cls, hp_pct: float) -> Tuple[str, float, str]:
+        if hp_pct < 0.50:
+            return "Rest", 0.75, "[专家规则接管] 生命值低于50%，建议稳妥休息回血防止暴毙"
+        else:
+            return "Smith", 0.70, "[专家规则接管] 生命值健康，建议锻造升级关键卡牌提升战力"
+
+    @classmethod
+    def evaluate_map_routing_fallback(cls, hp_pct: float, criteria: Dict[str, str]) -> Tuple[str, float, str]:
+        if hp_pct < 0.40:
+            for k in criteria:
+                if "_R" in k or "休息" in criteria[k]:
+                    return k, 0.75, "[专家规则接管] 危险血线，优先规划前往营地回血"
+                if "_?" in k:
+                    return k, 0.60, "[专家规则接管] 低血量建议走未知事件，避开强敌"
+        elif hp_pct >= 0.70:
+            for k in criteria:
+                if "_E" in k or "精英" in criteria[k]:
+                    return k, 0.70, "[专家规则接管] 生命充裕，建议挑战精英获取遗物与高稀有卡牌"
+
+        first_key = list(criteria.keys())[0] if criteria else "Path_1"
+        return first_key, 0.50, "[专家规则接管] 建议平稳推进常规路线"
 
 class MacroAdvisor:
     def __init__(self, laya_client: Optional[LayaClient] = None):
@@ -174,6 +252,15 @@ class MacroAdvisor:
         confidence = choice_ans.get("confidence", 0.0)
         probabilities = choice_ans.get("probabilities", {})
 
+        # Low confidence or anomalous fallback check
+        if confidence < 0.35 or rec_choice not in criteria:
+            fb_choice, fb_conf, fb_note = FallbackExpertEngine.evaluate_card_reward_fallback(
+                offered_cards, len(deck_cards), archetype
+            )
+            rec_choice = fb_choice
+            confidence = fb_conf
+            tactical_notes.append(fb_note)
+
         noul_ans = answers.get("skip_eval", {})
         skip_prob = noul_ans.get("noul", None)
 
@@ -254,9 +341,19 @@ class MacroAdvisor:
         answers = resp.get("answers", {})
 
         choice_ans = answers.get("path_choice", {})
-        rec_choice = choice_ans.get("choice", list(criteria.keys())[0])
+        rec_choice = choice_ans.get("choice", list(criteria.keys())[0] if criteria else "")
         confidence = choice_ans.get("confidence", 0.0)
         probabilities = choice_ans.get("probabilities", {})
+
+        hp_pct = hp / max(1, max_hp)
+        tactical_note = ""
+        if confidence < 0.35 or rec_choice not in criteria:
+            fb_choice, fb_conf, fb_note = FallbackExpertEngine.evaluate_map_routing_fallback(
+                hp_pct, criteria
+            )
+            rec_choice = fb_choice
+            confidence = fb_conf
+            tactical_note = fb_note
 
         noul_ans = answers.get("elite_safety", {})
         elite_safe = noul_ans.get("noul", None)
@@ -274,6 +371,7 @@ class MacroAdvisor:
             noul_label="精英安全度",
             score_value=risk_score,
             score_label="路线危险度",
+            tactical_note=tactical_note,
             raw_response=resp,
             latency_ms=resp.get("latency_ms", resp.get("client_latency_ms", 0.0))
         )
@@ -284,7 +382,7 @@ class MacroAdvisor:
         floor = game_state.get("floor", 1)
         hp = game_state.get("current_hp", 80)
         max_hp = game_state.get("max_hp", 80)
-        hp_pct = hp / max_hp
+        hp_pct = hp / max(1, max_hp)
 
         criteria = {
             "Smith": "锻造升级：强化牌组核心关键卡牌，提升长期战力",
@@ -319,6 +417,13 @@ class MacroAdvisor:
         confidence = choice_ans.get("confidence", 0.0)
         probabilities = choice_ans.get("probabilities", {})
 
+        tactical_note = ""
+        if confidence < 0.35 or rec_choice not in criteria:
+            fb_choice, fb_conf, fb_note = FallbackExpertEngine.evaluate_rest_site_fallback(hp_pct)
+            rec_choice = fb_choice
+            confidence = fb_conf
+            tactical_note = fb_note
+
         noul_ans = answers.get("need_heal", {})
         heal_urgency = noul_ans.get("noul", None)
 
@@ -330,6 +435,7 @@ class MacroAdvisor:
             choice_probabilities=probabilities,
             noul_probability=heal_urgency,
             noul_label="回血紧迫度",
+            tactical_note=tactical_note,
             raw_response=resp,
             latency_ms=resp.get("latency_ms", resp.get("client_latency_ms", 0.0))
         )

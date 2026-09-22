@@ -3,15 +3,17 @@ World-Class Multi-Character Combat Solver Module for Slay the Spire.
 Exhaustively searches card play combinations to calculate the mathematically optimal play sequence.
 Features:
 - Full 4-character mechanics:
-  - Ironclad: Strength scaling, Vulnerable, Body Slam, Block stacking.
-  - The Silent: Poison ticks, Shivs (Accuracy synergy), Weak mitigation.
-  - Defect: Lightning/Frost Orbs, Focus scaling, 0-cost loops.
+  - Ironclad: Strength scaling, Vulnerable, Body Slam, Block stacking, Energy & Exhaust synergies.
+  - The Silent: Poison stacking, Catalyst multiplication, end-of-turn poison lethal cancellation, Shivs.
+  - Defect: Orbs (Lightning, Frost, Dark, Plasma), Focus scaling, slot overflow auto-evoke, turn-end passives.
   - Watcher: Wrath (2x dealt, 2x taken), Calm (+2 energy on exit), Divinity (3x dealt).
-- Relic modifiers:
+- Relic modifiers & timings:
+  - Pen Nib (precise 10th attack 2x damage trigger & counter reset).
+  - Orichalcum (+6 block at turn end if block is 0).
+  - Incense Burner (turn 6 Intangible: damage taken reduced to 1 per hit).
   - Paper Frog (1.75x Vulnerable), Paper Crane (40% Weak reduction).
-  - Pen Nib (2x damage on 10th attack), Strike Dummy (+3 dmg to Strikes).
   - Kunai (+1 Dex / 3 attacks), Shuriken (+1 Str / 3 attacks), Ornamental Fan (+4 Block / 3 attacks).
-  - Anchor (+10 block turn 1).
+  - Anchor (+10 block turn 1), Strike Dummy (+3 dmg to Strikes).
 - Multi-objective optimization:
   - Priority 1: Minimize net HP loss (0 damage taken = PERFECT BLOCK).
   - Priority 2: Maximize lethal enemy cancellations (killing attacking enemy nullifies its damage).
@@ -62,8 +64,15 @@ class SimPlayer:
     frail_turns: int = 0
     stance: str = "None"  # "None", "Wrath", "Calm", "Divinity"
 
-    # Relic & Power flags
-    pen_nib_active: bool = False
+    # Defect Orbs
+    orbs: List[str] = field(default_factory=list)  # ["Lightning", "Frost", "Dark", "Plasma"]
+    max_orbs: int = 3
+
+    # Relic & Power flags and counters
+    pen_nib_count: int = 0
+    turn: int = 1
+    has_orichalcum: bool = False
+    has_incense_burner: bool = False
     attacks_played_this_turn: int = 0
     has_kunai: bool = False
     has_shuriken: bool = False
@@ -95,6 +104,7 @@ class CombatPlan:
     total_block_gained: int = 0
     remaining_energy: int = 0
     final_stance: str = "None"
+    end_of_turn_forecast: str = ""
     score: float = 0.0
     computation_time_ms: float = 0.0
 
@@ -114,7 +124,7 @@ class CombatSolver:
         player_data = combat_state.get("player", {})
         monsters_data = combat_state.get("monsters", [])
         raw_hand = combat_state.get("hand", [])
-        relics_list = relics or combat_state.get("relics", [])
+        relics_list = relics or combat_state.get("relics") or combat_state.get("player", {}).get("relics", [])
         turn = combat_state.get("turn", 1)
 
         # Parse player & relics
@@ -135,23 +145,11 @@ class CombatSolver:
         initial_incoming = self._calculate_incoming_damage(active_monsters, player)
 
         if not hand_cards or player.energy <= 0 or not active_monsters:
-            plan = CombatPlan(
-                steps=[],
-                initial_incoming_damage=initial_incoming,
-                projected_incoming_damage=initial_incoming,
-                projected_block=player.block,
-                projected_hp_loss=max(0, initial_incoming - player.block),
-                monsters_killed=0,
-                total_damage_dealt=0,
-                total_block_gained=0,
-                remaining_energy=player.energy,
-                final_stance=player.stance,
-                score=0.0,
-                computation_time_ms=round((time.time() - start_time) * 1000, 2)
-            )
+            plan = self._evaluate_state(player, monsters, [], initial_incoming)
+            plan.computation_time_ms = round((time.time() - start_time) * 1000, 2)
             return plan
 
-        # Bounded DFS search
+        # Bounded DFS search with Beam Width pruning
         best_plan: Optional[CombatPlan] = None
         best_score = -float("inf")
         evaluated_states = 0
@@ -204,16 +202,49 @@ class CombatSolver:
                     stack.append((next_player, next_monsters, next_hand, curr_steps + [step]))
 
         if best_plan is None:
-            best_plan = CombatPlan(
-                steps=[],
-                initial_incoming_damage=initial_incoming,
-                projected_incoming_damage=initial_incoming,
-                projected_block=player.block,
-                projected_hp_loss=max(0, initial_incoming - player.block)
-            )
+            best_plan = self._evaluate_state(player, monsters, [], initial_incoming)
 
         best_plan.computation_time_ms = round((time.time() - start_time) * 1000, 2)
         return best_plan
+
+    def _evoke_orb(
+        self,
+        orb_type: str,
+        player: SimPlayer,
+        monsters: List[SimMonster],
+        target_idx: Optional[int]
+    ) -> Tuple[int, int]:
+        """Evokes an orb, returning (damage_dealt, block_gained)."""
+        dmg = 0
+        blk = 0
+        if orb_type == "Lightning":
+            dmg = max(0, 8 + player.focus)
+            living = [m for m in monsters if m.is_alive]
+            if living:
+                # Prefer current target or lowest HP
+                target = living[0]
+                if target_idx is not None and 0 <= target_idx < len(monsters) and monsters[target_idx].is_alive:
+                    target = monsters[target_idx]
+                else:
+                    target = min(living, key=lambda m: m.current_hp)
+                unblocked = max(0, dmg - target.block)
+                target.block = max(0, target.block - dmg)
+                target.current_hp = max(0, target.current_hp - unblocked)
+        elif orb_type == "Frost":
+            blk = max(0, 5 + player.focus)
+            player.block += blk
+        elif orb_type == "Plasma":
+            player.energy += 2
+        elif orb_type == "Dark":
+            dmg = max(0, 6 + player.focus)
+            living = [m for m in monsters if m.is_alive]
+            if living:
+                target = min(living, key=lambda m: m.current_hp)
+                unblocked = max(0, dmg - target.block)
+                target.block = max(0, target.block - dmg)
+                target.current_hp = max(0, target.current_hp - unblocked)
+
+        return dmg, blk
 
     def _simulate_play_card(
         self,
@@ -251,16 +282,24 @@ class CombatSolver:
             elif card.stance == "None" and old_stance != "None":
                 step.notes += "退出姿态 "
 
-        # 2. Block Calculation (Skills)
+        # 2. Energy Gain & Focus
+        if card.energy_gain > 0:
+            new_player.energy += card.energy_gain
+            step.notes += f"+{card.energy_gain}⚡ "
+        if card.focus_applied != 0:
+            new_player.focus += card.focus_applied
+            step.notes += f"+{card.focus_applied}集中 "
+
+        # 3. Block Calculation (Skills)
         if card.base_block > 0:
             block = card.base_block + new_player.dexterity
             if new_player.frail_turns > 0:
                 block = math.floor(block * 0.75)
             block = max(0, block)
             new_player.block += block
-            step.block_gained = block
+            step.block_gained += block
 
-        # 3. Powers / Buffs
+        # 4. Powers / Buffs
         if card.strength_applied > 0:
             new_player.strength += card.strength_applied
             step.notes += f"+{card.strength_applied}力量 "
@@ -268,9 +307,57 @@ class CombatSolver:
             new_player.dexterity += card.dexterity_applied
             step.notes += f"+{card.dexterity_applied}敏捷 "
 
-        # 4. Attack Damage Calculation
+        # 5. Silent Poison Stacking & Catalyst
+        if card.poison_applied > 0:
+            if card.is_aoe:
+                for m in new_monsters:
+                    if m.is_alive:
+                        m.poison += card.poison_applied
+                step.notes += f"全员+{card.poison_applied}毒 "
+            elif target_idx is not None and 0 <= target_idx < len(new_monsters):
+                target = new_monsters[target_idx]
+                target.poison += card.poison_applied
+                step.notes += f"+{card.poison_applied}毒 "
+
+        if card.id.startswith("Catalyst") and target_idx is not None and 0 <= target_idx < len(new_monsters):
+            target = new_monsters[target_idx]
+            if target.poison > 0:
+                mult = 3 if (card.id.endswith("+") or card.name.endswith("+")) else 2
+                target.poison *= mult
+                step.notes += f"毒量x{mult}({target.poison}) "
+
+        # 6. Defect Orbs Channeling & Evoking
+        if card.channel_orb and card.channel_count > 0:
+            for _ in range(card.channel_count):
+                if len(new_player.orbs) >= new_player.max_orbs:
+                    evoked = new_player.orbs.pop(0)
+                    e_dmg, e_blk = self._evoke_orb(evoked, new_player, new_monsters, target_idx)
+                    step.damage_dealt += e_dmg
+                    step.block_gained += e_blk
+                    step.notes += f"顶球激发{evoked}(+{e_dmg}伤/+{e_blk}甲) "
+                new_player.orbs.append(card.channel_orb)
+            step.notes += f"生成{card.channel_count}{card.channel_orb} "
+
+        if card.id.startswith("Dualcast") and new_player.orbs:
+            evoked = new_player.orbs.pop(0)
+            for _ in range(2):
+                e_dmg, e_blk = self._evoke_orb(evoked, new_player, new_monsters, target_idx)
+                step.damage_dealt += e_dmg
+                step.block_gained += e_blk
+            step.notes += f"双重激发{evoked}(+{step.damage_dealt}伤/+{step.block_gained}甲) "
+        elif card.evoke_orbs > 0:
+            for _ in range(card.evoke_orbs):
+                if new_player.orbs:
+                    evoked = new_player.orbs.pop(0)
+                    e_dmg, e_blk = self._evoke_orb(evoked, new_player, new_monsters, target_idx)
+                    step.damage_dealt += e_dmg
+                    step.block_gained += e_blk
+                    step.notes += f"激发{evoked}(+{e_dmg}伤/+{e_blk}甲) "
+
+        # 7. Attack Damage Calculation
         if card.card_type == "ATTACK" and (card.base_damage > 0 or card.id.startswith("Body Slam")):
             new_player.attacks_played_this_turn += 1
+            new_player.pen_nib_count += 1
 
             # Relic triggers every 3 attacks
             if new_player.has_kunai and new_player.attacks_played_this_turn % 3 == 0:
@@ -283,16 +370,13 @@ class CombatSolver:
                 new_player.block += 4
                 step.notes += "+4格挡(折扇) "
 
-            # Base damage & scaling
             dmg_base = card.base_damage
             if card.id.startswith("Body Slam"):
                 dmg_base = new_player.block
 
-            # Strike Dummy (+3 damage to Strikes)
             if new_player.has_strike_dummy and "strike" in card.name.lower():
                 dmg_base += 3
 
-            # Silent Shiv bonus (Accuracy)
             if "shiv" in card.name.lower():
                 dmg_base += new_player.accuracy_bonus
 
@@ -302,22 +386,27 @@ class CombatSolver:
             if new_player.weak_turns > 0:
                 dmg = math.floor(dmg * 0.75)
 
-            # Watcher Stance Multiplier
+            # Watcher Stances
             if new_player.stance == "Wrath":
                 dmg *= 2
             elif new_player.stance == "Divinity":
                 dmg *= 3
 
-            # Pen Nib double damage
-            if new_player.pen_nib_active:
+            # Pen Nib double damage timing
+            if new_player.pen_nib_count == 10:
                 dmg *= 2
-                new_player.pen_nib_active = False
-                step.notes += "(🖊️钢笔尖双倍!) "
+                new_player.pen_nib_count = 0
+                step.notes += "(🖊️钢笔尖第10击双倍!) "
 
             dmg = max(0, dmg)
-
-            # Vulnerable multiplier (1.75x with Paper Frog, else 1.5x)
             vuln_mult = 1.75 if new_player.has_paper_frog else 1.5
+
+            # Bane synergy: 2x hits if target has poison
+            hits = card.hits
+            if card.id.startswith("Bane") and target_idx is not None and 0 <= target_idx < len(new_monsters):
+                if new_monsters[target_idx].poison > 0:
+                    hits = 2
+                    step.notes += "(剧毒双击!) "
 
             if card.is_aoe:
                 total_dealt = 0
@@ -328,7 +417,7 @@ class CombatSolver:
                     final_dmg = dmg
                     if m.vulnerable_turns > 0:
                         final_dmg = math.floor(final_dmg * vuln_mult)
-                    final_dmg *= card.hits
+                    final_dmg *= hits
                     unblocked = max(0, final_dmg - m.block)
                     m.block = max(0, m.block - final_dmg)
                     m.current_hp = max(0, m.current_hp - unblocked)
@@ -337,7 +426,7 @@ class CombatSolver:
                         m.vulnerable_turns += card.vulnerable_applied
                     if card.weak_applied > 0:
                         m.weak_turns += card.weak_applied
-                step.damage_dealt = total_dealt
+                step.damage_dealt += total_dealt
             elif target_idx is not None and 0 <= target_idx < len(new_monsters):
                 target = new_monsters[target_idx]
                 step.target_name = target.name
@@ -345,11 +434,11 @@ class CombatSolver:
                     final_dmg = dmg
                     if target.vulnerable_turns > 0:
                         final_dmg = math.floor(final_dmg * vuln_mult)
-                    final_dmg *= card.hits
+                    final_dmg *= hits
                     unblocked = max(0, final_dmg - target.block)
                     target.block = max(0, target.block - final_dmg)
                     target.current_hp = max(0, target.current_hp - unblocked)
-                    step.damage_dealt = final_dmg
+                    step.damage_dealt += final_dmg
                     if card.vulnerable_applied > 0:
                         target.vulnerable_turns += card.vulnerable_applied
                         step.notes += f"给予{card.vulnerable_applied}易伤 "
@@ -366,13 +455,69 @@ class CombatSolver:
         steps: List[PlayStep],
         initial_incoming: int
     ) -> CombatPlan:
-        """Evaluates end-of-turn outcome with lethal cancellation and stance impact."""
-        projected_incoming = 0
-        monsters_killed = 0
+        """Evaluates end-of-turn outcome with Orbs passives, Poison ticks, Relics, and lethal cancellation."""
+        monsters_copy = copy.deepcopy(monsters)
+        player_copy = copy.deepcopy(player)
+
         total_damage = sum(s.damage_dealt for s in steps)
         total_block = sum(s.block_gained for s in steps)
 
-        for m in monsters:
+        forecast_parts = []
+
+        # 1. Defect Orbs End-of-turn Passives
+        lightning_dmg = 0
+        frost_blk = 0
+        for orb in player_copy.orbs:
+            if orb == "Frost":
+                blk = max(0, 2 + player_copy.focus)
+                player_copy.block += blk
+                frost_blk += blk
+            elif orb == "Lightning":
+                dmg = max(0, 3 + player_copy.focus)
+                lightning_dmg += dmg
+                # Deal to first living monster
+                for m in monsters_copy:
+                    if m.is_alive:
+                        unblocked = max(0, dmg - m.block)
+                        m.block = max(0, m.block - dmg)
+                        m.current_hp = max(0, m.current_hp - unblocked)
+                        break
+
+        if lightning_dmg > 0:
+            forecast_parts.append(f"[闪电被动: {lightning_dmg}伤]")
+        if frost_blk > 0:
+            forecast_parts.append(f"[冰霜被动: {frost_blk}甲]")
+
+        # 2. Silent Poison End-of-turn Damage Tick
+        total_poison_dmg = 0
+        for m in monsters_copy:
+            if m.is_alive and m.poison > 0:
+                p_dmg = m.poison
+                unblocked = max(0, p_dmg - m.block)
+                m.block = max(0, m.block - p_dmg)
+                m.current_hp = max(0, m.current_hp - unblocked)
+                total_poison_dmg += p_dmg
+                m.poison = max(0, m.poison - 1)
+
+        if total_poison_dmg > 0:
+            forecast_parts.append(f"[回合末毒伤: {total_poison_dmg}]")
+
+        # 3. Orichalcum (+6 block if 0 block at turn end)
+        if player_copy.has_orichalcum and player_copy.block == 0:
+            player_copy.block += 6
+            forecast_parts.append("[奥利哈钢: +6甲]")
+
+        # 4. Incense Burner (Turn 6 gives Intangible)
+        is_intangible = False
+        if player_copy.has_incense_burner and player_copy.turn % 6 == 0:
+            is_intangible = True
+            forecast_parts.append("[香炉: 获得无实体]")
+
+        # 5. Calculate Incoming Monster Damage & Lethal Cancellations
+        projected_incoming = 0
+        monsters_killed = 0
+
+        for m in monsters_copy:
             if not m.is_alive:
                 monsters_killed += 1
                 continue
@@ -380,19 +525,22 @@ class CombatSolver:
                 dmg = m.move_adjusted_damage
                 # Monster weak reduction (40% with Paper Crane, else 25%)
                 if m.weak_turns > 0:
-                    weak_factor = 0.6 if player.has_paper_crane else 0.75
+                    weak_factor = 0.6 if player_copy.has_paper_crane else 0.75
                     dmg = math.floor(dmg * weak_factor)
                 # Player vulnerable
-                if player.vulnerable_turns > 0:
+                if player_copy.vulnerable_turns > 0:
                     dmg = math.floor(dmg * 1.5)
                 # Watcher Wrath: player takes 2x damage!
-                if player.stance == "Wrath":
+                if player_copy.stance == "Wrath":
                     dmg *= 2
+
+                if is_intangible:
+                    dmg = min(1, dmg)
 
                 projected_incoming += dmg * m.move_hits
 
-        hp_loss = max(0, projected_incoming - player.block)
-        excess_block = max(0, player.block - projected_incoming)
+        hp_loss = max(0, projected_incoming - player_copy.block)
+        excess_block = max(0, player_copy.block - projected_incoming)
 
         # Multi-objective fitness score
         score = (
@@ -400,20 +548,21 @@ class CombatSolver:
             + self.config.weight_kill_enemy * monsters_killed
             + self.config.weight_damage_dealt * total_damage
             + self.config.weight_retained_block * excess_block
-            + self.config.weight_conserve_energy * player.energy
+            + self.config.weight_conserve_energy * player_copy.energy
         )
 
         return CombatPlan(
             steps=steps,
             initial_incoming_damage=initial_incoming,
             projected_incoming_damage=projected_incoming,
-            projected_block=player.block,
+            projected_block=player_copy.block,
             projected_hp_loss=hp_loss,
             monsters_killed=monsters_killed,
             total_damage_dealt=total_damage,
             total_block_gained=total_block,
-            remaining_energy=player.energy,
-            final_stance=player.stance,
+            remaining_energy=player_copy.energy,
+            final_stance=player_copy.stance,
+            end_of_turn_forecast=" | ".join(forecast_parts),
             score=score
         )
 
@@ -439,6 +588,14 @@ class CombatSolver:
         elif "Calm" in powers: stance = "Calm"
         elif "Divinity" in powers: stance = "Divinity"
 
+        # Orbs (Defect)
+        raw_orbs = data.get("orbs", [])
+        orbs_list = []
+        for o in raw_orbs:
+            name = o.get("name") or o.get("id", "")
+            if name in ["Lightning", "Frost", "Dark", "Plasma"]:
+                orbs_list.append(name)
+
         player = SimPlayer(
             current_hp=data.get("current_hp", 80),
             max_hp=data.get("max_hp", 80),
@@ -451,7 +608,12 @@ class CombatSolver:
             weak_turns=powers.get("Weak", 0),
             frail_turns=powers.get("Frail", 0),
             stance=stance,
-            pen_nib_active=(relic_ids.get("Pen Nib", -1) == 9),
+            orbs=orbs_list,
+            max_orbs=data.get("max_orbs", 3),
+            pen_nib_count=max(0, relic_ids.get("Pen Nib", 0)),
+            turn=turn,
+            has_orichalcum=("Orichalcum" in relic_ids),
+            has_incense_burner=("Incense Burner" in relic_ids),
             has_kunai=("Kunai" in relic_ids),
             has_shuriken=("Shuriken" in relic_ids),
             has_ornamental_fan=("Ornamental Fan" in relic_ids),

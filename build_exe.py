@@ -107,7 +107,7 @@ def build():
 
     # 3. Create zip archive
     print("\n=== 3. Packaging into ZIP archive for release ===")
-    zip_path = os.path.join(dist_dir, "NeowEye-v1.0.0-windows-x64")
+    zip_path = os.path.join(dist_dir, "NeowEye-v1.0.1-windows-x64")
     shutil.make_archive(zip_path, "zip", dist_dir, "NeowEye")
     print(f"Release ZIP created at: {zip_path}.zip ({os.path.getsize(zip_path + '.zip') / (1024*1024):.1f} MB)")
     return True
