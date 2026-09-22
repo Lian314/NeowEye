@@ -13,7 +13,7 @@ Features:
   - Hotkey support: F1 toggle hide/show, F2 toggle click-through.
 """
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 import ctypes
 import logging
 from typing import Dict, Any, Optional, Callable, List
@@ -140,6 +140,24 @@ class OverlayHUD:
         )
         self.lbl_relic_alert.pack(fill="x")
         self.relic_alert_bar.pack_forget()
+
+        # 3.5 Environment Diagnostic Banner
+        self.env_banner = tk.Frame(self.root, bg="#1a1e2b", padx=10, pady=8, highlightthickness=1, highlightbackground="#3d445c")
+        self.env_banner_title = tk.Label(
+            self.env_banner, text="🔍 环境检测中...", fg="#ffa502", bg="#1a1e2b",
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w"
+        )
+        self.env_banner_title.pack(fill="x")
+
+        self.env_banner_desc = tk.Label(
+            self.env_banner, text="", fg=self.config.text_secondary, bg="#1a1e2b",
+            font=("Microsoft YaHei UI", 8), anchor="w", justify="left", wraplength=340
+        )
+        self.env_banner_desc.pack(fill="x", pady=(2, 6))
+
+        self.env_btn_frame = tk.Frame(self.env_banner, bg="#1a1e2b")
+        self.env_btn_frame.pack(fill="x")
+        self.env_banner.pack_forget()
 
         # 4. Multi-Tab Navigation Buttons Bar
         self.tab_bar = tk.Frame(self.root, bg="#1a1d2b", padx=6, pady=4)
@@ -510,5 +528,105 @@ class OverlayHUD:
             lbl_sample = tk.Label(self.inner_frame, text=sample_text, fg="#a4b0be", bg=self.config.card_bg, font=("Microsoft YaHei UI", 7), wraplength=310, justify="left")
             lbl_sample.pack(fill="x")
 
+    def update_env_status(
+        self,
+        diag,
+        on_refresh: Optional[Callable[[], None]] = None,
+        on_select_folder: Optional[Callable[[str], None]] = None,
+        on_subscribe: Optional[Callable[[], None]] = None,
+        on_install_offline: Optional[Callable[[str], None]] = None
+    ):
+        """Updates the environment diagnostic banner and status indicators."""
+        for w in self.env_btn_frame.winfo_children():
+            w.destroy()
+
+        if diag.status_code == "READY":
+            self.status_dot.config(text="●", fg="#2ed573")
+            source_tag = f" ({diag.game_source})" if diag.game_source else ""
+            self.lbl_game_status.config(
+                text=f"[就绪] 尖塔联动已就绪{source_tag} · 等待对局开始..."
+            )
+            self.env_banner.pack_forget()
+            return
+
+        # Pack banner between info_bar and tab_bar
+        self.env_banner.pack(fill="x", side="top", padx=10, pady=(0, 6), before=self.tab_bar)
+
+        if diag.status_code == "MODS_MISSING":
+            self.status_dot.config(text="●", fg="#ffa502")
+            self.lbl_game_status.config(text="[注意] 检测到游戏已安装，但缺少通信 Mod")
+            self.env_banner_title.config(text="⚠️ 缺少必备通信 Mod", fg="#ffa502")
+            self.env_banner_desc.config(
+                text=f"游戏目录: {diag.game_path}\n缺少: {'、'.join(diag.missing_mods)}"
+            )
+
+            if on_subscribe:
+                btn_sub = tk.Button(
+                    self.env_btn_frame, text="🌐 创意工坊一键订阅", fg="#ffffff", bg="#1e90ff",
+                    activebackground="#2f3542", bd=0, padx=8, pady=3,
+                    font=("Microsoft YaHei UI", 8, "bold"), cursor="hand2",
+                    command=on_subscribe
+                )
+                btn_sub.pack(side="left", padx=(0, 4))
+
+            if on_install_offline and diag.game_path:
+                btn_offline = tk.Button(
+                    self.env_btn_frame, text="📦 安装离线补丁", fg="#ffffff", bg="#2ed573",
+                    activebackground="#2f3542", bd=0, padx=8, pady=3,
+                    font=("Microsoft YaHei UI", 8, "bold"), cursor="hand2",
+                    command=lambda: on_install_offline(diag.game_path)
+                )
+                btn_offline.pack(side="left", padx=(0, 4))
+
+            if on_refresh:
+                btn_ref = tk.Button(
+                    self.env_btn_frame, text="🔄 刷新", fg=self.config.text_secondary, bg="#262a38",
+                    activebackground="#3e4458", bd=0, padx=6, pady=3,
+                    font=("Microsoft YaHei UI", 8), cursor="hand2",
+                    command=on_refresh
+                )
+                btn_ref.pack(side="right")
+
+        elif diag.status_code == "GAME_NOT_FOUND":
+            self.status_dot.config(text="●", fg="#ff7f50")
+            self.lbl_game_status.config(text="[提示] 未检测到《杀戮尖塔》安装目录")
+            self.env_banner_title.config(text="🔍 未检测到《杀戮尖塔》目录", fg="#ff7f50")
+            self.env_banner_desc.config(
+                text="未能在常见路径找到游戏。若已安装请手动指定；若未安装可体验演示模式。"
+            )
+
+            def _choose_folder():
+                chosen = filedialog.askdirectory(
+                    title="选择《杀戮尖塔》游戏安装目录 (包含 SlayTheSpire.exe 或 desktop-1.0.jar)"
+                )
+                if chosen and on_select_folder:
+                    on_select_folder(chosen)
+
+            btn_browse = tk.Button(
+                self.env_btn_frame, text="📁 手动选择游戏目录", fg="#ffffff", bg="#1e90ff",
+                activebackground="#2f3542", bd=0, padx=8, pady=3,
+                font=("Microsoft YaHei UI", 8, "bold"), cursor="hand2",
+                command=_choose_folder
+            )
+            btn_browse.pack(side="left", padx=(0, 4))
+
+            btn_demo = tk.Button(
+                self.env_btn_frame, text="🎮 体验演示推演", fg="#ffffff", bg="#e55039",
+                activebackground="#2f3542", bd=0, padx=8, pady=3,
+                font=("Microsoft YaHei UI", 8, "bold"), cursor="hand2",
+                command=lambda: self.switch_tab("combat")
+            )
+            btn_demo.pack(side="left", padx=(0, 4))
+
+            if on_refresh:
+                btn_ref = tk.Button(
+                    self.env_btn_frame, text="🔄 刷新", fg=self.config.text_secondary, bg="#262a38",
+                    activebackground="#3e4458", bd=0, padx=6, pady=3,
+                    font=("Microsoft YaHei UI", 8), cursor="hand2",
+                    command=on_refresh
+                )
+                btn_ref.pack(side="right")
+
     def run(self):
         self.root.mainloop()
+

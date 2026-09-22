@@ -26,10 +26,12 @@ def build():
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name=NeowEye",
+        "-y",  # Overwrite output directory without asking
         "--onedir",
         "--windowed",  # No black console window behind the game
         "--add-data=EO;EO",
         "--add-data=models;models",
+        "--add-data=spire_mods;spire_mods",
         "--hidden-import=onnxruntime",
         "--hidden-import=tokenizers",
         "--hidden-import=numpy",

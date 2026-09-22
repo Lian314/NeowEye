@@ -18,6 +18,8 @@ from relic_tracker import RelicTracker
 from deck_tracker import DeckTracker
 from test_mock_scenarios import MOCK_SCENARIOS
 
+from env_detector import EnvironmentDetector, DiagnosticResult
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +43,11 @@ class SpireTacticalAssistant:
         self.deck_tracker = DeckTracker()
         self.comm_bridge = CommBridge(CONFIG.comm)
 
+        # Environment detector & Zero-click auto-binding
+        self.env_detector = EnvironmentDetector()
+        bound, cfg_path = self.env_detector.auto_bind_communication_mod()
+        logger.info(f"CommunicationMod auto-binding: bound={bound}, path={cfg_path}")
+
         # UI Overlay HUD
         self.hud = OverlayHUD(on_scenario_select=self.on_mock_scenario_selected)
         self.hud.set_scenarios(list(MOCK_SCENARIOS.keys()))
@@ -58,8 +65,65 @@ class SpireTacticalAssistant:
             first_scenario_name = list(MOCK_SCENARIOS.keys())[0]
             self.on_mock_scenario_selected(first_scenario_name)
 
+        # Environment diagnostic handling
+        if self.mode == "stdin":
+            # Launched by CommunicationMod from the game
+            ready_diag = DiagnosticResult(
+                game_installed=True,
+                status_code="READY",
+                game_source="CommunicationMod",
+                status_title="[就绪] 尖塔联动已建立",
+                config_bound=True
+            )
+            self.hud.root.after(0, lambda: self._apply_diagnostic_result(ready_diag))
+        else:
+            # User manually launched the app: run async diagnosis
+            self.refresh_environment()
+
         # Run UI mainloop on main thread
         self.hud.run()
+
+    def _apply_diagnostic_result(self, diag: DiagnosticResult):
+        """Applies diagnostic result to HUD."""
+        self.hud.update_env_status(
+            diag,
+            on_refresh=self.refresh_environment,
+            on_select_folder=self.on_select_game_folder,
+            on_subscribe=self.env_detector.open_workshop_pages,
+            on_install_offline=self.on_install_offline_mods
+        )
+
+    def refresh_environment(self):
+        """Asynchronously re-diagnoses environment and updates HUD."""
+        def _work():
+            diag = self.env_detector.diagnose()
+            self.hud.root.after(0, lambda: self._apply_diagnostic_result(diag))
+        threading.Thread(target=_work, daemon=True).start()
+
+    def on_select_game_folder(self, folder_path: str):
+        """Handles user selecting game directory manually."""
+        success = self.env_detector.save_custom_game_dir(folder_path)
+        if success:
+            self.refresh_environment()
+        else:
+            try:
+                import tkinter.messagebox as mb
+                mb.showwarning("无效目录", "所选目录下未找到 SlayTheSpire.exe 或 desktop-1.0.jar！")
+            except Exception:
+                pass
+
+    def on_install_offline_mods(self, target_game_dir: str):
+        """Handles user clicking install offline mods."""
+        ok, msg = self.env_detector.install_offline_mods(target_game_dir)
+        try:
+            import tkinter.messagebox as mb
+            if ok:
+                mb.showinfo("安装成功", msg)
+                self.refresh_environment()
+            else:
+                mb.showerror("安装失败", msg)
+        except Exception:
+            pass
 
     def on_game_state_received(self, raw_data: Dict[str, Any]):
         """Handler for incoming state messages from CommunicationMod."""
