@@ -577,11 +577,28 @@ class CombatSolver:
         return total
 
     def _parse_player(self, data: Dict[str, Any], relics: List[Dict[str, Any]], turn: int) -> SimPlayer:
-        powers = {p.get("id"): p.get("amount", 0) for p in data.get("powers", [])}
-        relic_ids = {r.get("id"): r.get("counter", -1) for r in relics}
+        powers: Dict[str, int] = {}
+        for p in data.get("powers", []):
+            if isinstance(p, dict):
+                pid = p.get("id")
+                if pid:
+                    try:
+                        powers[str(pid)] = int(p.get("amount", 0))
+                    except (ValueError, TypeError):
+                        powers[str(pid)] = 0
+
+        relic_ids: Dict[str, int] = {}
+        for r in relics:
+            if isinstance(r, dict):
+                rid = r.get("id")
+                if rid:
+                    try:
+                        relic_ids[str(rid)] = int(r.get("counter", -1))
+                    except (ValueError, TypeError):
+                        relic_ids[str(rid)] = -1
 
         # Stance (Watcher)
-        stance = data.get("stance", "None")
+        stance = str(data.get("stance", "None"))
         if "Wrath" in powers: stance = "Wrath"
         elif "Calm" in powers: stance = "Calm"
         elif "Divinity" in powers: stance = "Divinity"
@@ -589,16 +606,24 @@ class CombatSolver:
         # Orbs (Defect)
         raw_orbs = data.get("orbs", [])
         orbs_list = []
-        for o in raw_orbs:
-            name = o.get("name") or o.get("id", "")
-            if name in ["Lightning", "Frost", "Dark", "Plasma"]:
-                orbs_list.append(name)
+        if isinstance(raw_orbs, list):
+            for o in raw_orbs:
+                if isinstance(o, dict):
+                    name = o.get("name") or o.get("id", "")
+                    if name in ["Lightning", "Frost", "Dark", "Plasma"]:
+                        orbs_list.append(str(name))
+
+        def _get_int(val, default):
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
 
         player = SimPlayer(
-            current_hp=data.get("current_hp", 80),
-            max_hp=data.get("max_hp", 80),
-            block=data.get("block", 0),
-            energy=data.get("energy", 3),
+            current_hp=_get_int(data.get("current_hp"), 80),
+            max_hp=max(1, _get_int(data.get("max_hp"), 80)),
+            block=max(0, _get_int(data.get("block"), 0)),
+            energy=max(0, _get_int(data.get("energy"), 3)),
             strength=powers.get("Strength", 0),
             dexterity=powers.get("Dexterity", 0),
             focus=powers.get("Focus", 0),
@@ -607,7 +632,7 @@ class CombatSolver:
             frail_turns=powers.get("Frail", 0),
             stance=stance,
             orbs=orbs_list,
-            max_orbs=data.get("max_orbs", 3),
+            max_orbs=_get_int(data.get("max_orbs"), 3),
             pen_nib_count=max(0, relic_ids.get("Pen Nib", 0)),
             turn=turn,
             has_orichalcum=("Orichalcum" in relic_ids),
@@ -628,24 +653,39 @@ class CombatSolver:
         return player
 
     def _parse_monster(self, index: int, data: Dict[str, Any]) -> SimMonster:
-        intent = data.get("intent", "UNKNOWN").upper()
+        def _get_int(val, default):
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        intent = str(data.get("intent", "UNKNOWN")).upper()
         is_attacking = "ATTACK" in intent
-        powers = {p.get("id"): p.get("amount", 0) for p in data.get("powers", [])}
+        powers: Dict[str, int] = {}
+        for p in data.get("powers", []):
+            if isinstance(p, dict):
+                pid = p.get("id")
+                if pid:
+                    try:
+                        powers[str(pid)] = int(p.get("amount", 0))
+                    except (ValueError, TypeError):
+                        powers[str(pid)] = 0
+
         return SimMonster(
             index=index,
-            id=data.get("id", f"Monster_{index}"),
-            name=data.get("name", f"Monster {index+1}"),
-            current_hp=data.get("current_hp", 10),
-            max_hp=data.get("max_hp", 10),
-            block=data.get("block", 0),
+            id=str(data.get("id", f"Monster_{index}")),
+            name=str(data.get("name", f"Monster {index+1}")),
+            current_hp=max(0, _get_int(data.get("current_hp"), 10)),
+            max_hp=max(1, _get_int(data.get("max_hp"), 10)),
+            block=max(0, _get_int(data.get("block"), 0)),
             intent=intent,
-            move_adjusted_damage=data.get("move_adjusted_damage", data.get("move_base_damage", 0)),
-            move_hits=data.get("move_hits", 1),
+            move_adjusted_damage=max(0, _get_int(data.get("move_adjusted_damage", data.get("move_base_damage")), 0)),
+            move_hits=max(1, _get_int(data.get("move_hits"), 1)),
             is_attacking=is_attacking,
             vulnerable_turns=powers.get("Vulnerable", 0),
             weak_turns=powers.get("Weak", 0),
             strength=powers.get("Strength", 0),
             poison=powers.get("Poison", 0),
-            is_gone=data.get("is_gone", False),
-            half_dead=data.get("half_dead", False)
+            is_gone=bool(data.get("is_gone", False)),
+            half_dead=bool(data.get("half_dead", False))
         )

@@ -162,56 +162,47 @@ class SpireTacticalAssistant:
         relic_alerts = self.relic_tracker.analyze_relics(relics, turn)
         self.hud.root.after(0, lambda: self.hud.update_relic_alerts(relic_alerts))
 
+        self._state_version = getattr(self, "_state_version", 0) + 1
+        current_version = self._state_version
+
         # 1. Combat State -> In-combat Mathematical Optimizer & Deck Tracker
         if combat_state and (screen_type == "NONE" or screen_type == "COMBAT"):
-            self._latest_combat_id = getattr(self, "_latest_combat_id", 0) + 1
-            combat_id = self._latest_combat_id
-
             def _async_combat_solve():
                 plan = self.combat_solver.solve(combat_state, relics=relics)
                 deck_stats = self.deck_tracker.analyze_deck(combat_state)
                 # Ensure only the latest state updates HUD
-                if combat_id == getattr(self, "_latest_combat_id", 0):
+                if current_version == getattr(self, "_state_version", 0):
                     self.hud.root.after(0, lambda: self.hud.show_combat_plan(plan))
                     self.hud.root.after(0, lambda: self.hud.show_deck_tab(deck_stats))
 
-            threading.Thread(target=_async_combat_solve, daemon=True, name=f"CombatSolve-{combat_id}").start()
+            threading.Thread(target=_async_combat_solve, daemon=True, name=f"CombatSolve-{current_version}").start()
 
         # 2. Card Reward Screen -> Laya Decision Engine
         elif screen_type == "CARD_REWARD":
-            self._latest_macro_id = getattr(self, "_latest_macro_id", 0) + 1
-            macro_id = self._latest_macro_id
-
             def _async_card_eval():
                 decision = self.macro_advisor.evaluate_card_reward(game_state)
-                if macro_id == getattr(self, "_latest_macro_id", 0):
+                if current_version == getattr(self, "_state_version", 0):
                     self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
 
-            threading.Thread(target=_async_card_eval, daemon=True, name=f"CardReward-{macro_id}").start()
+            threading.Thread(target=_async_card_eval, daemon=True, name=f"CardReward-{current_version}").start()
 
         # 3. Map Routing Screen -> Laya Decision Engine
         elif screen_type == "MAP":
-            self._latest_macro_id = getattr(self, "_latest_macro_id", 0) + 1
-            macro_id = self._latest_macro_id
-
             def _async_map_eval():
                 decision = self.macro_advisor.evaluate_map_routing(game_state)
-                if macro_id == getattr(self, "_latest_macro_id", 0):
+                if current_version == getattr(self, "_state_version", 0):
                     self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
 
-            threading.Thread(target=_async_map_eval, daemon=True, name=f"MapRouting-{macro_id}").start()
+            threading.Thread(target=_async_map_eval, daemon=True, name=f"MapRouting-{current_version}").start()
 
         # 4. Rest Site Screen -> Laya Decision Engine
         elif screen_type == "REST":
-            self._latest_macro_id = getattr(self, "_latest_macro_id", 0) + 1
-            macro_id = self._latest_macro_id
-
             def _async_rest_eval():
                 decision = self.macro_advisor.evaluate_rest_site(game_state)
-                if macro_id == getattr(self, "_latest_macro_id", 0):
+                if current_version == getattr(self, "_state_version", 0):
                     self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
 
-            threading.Thread(target=_async_rest_eval, daemon=True, name=f"RestSite-{macro_id}").start()
+            threading.Thread(target=_async_rest_eval, daemon=True, name=f"RestSite-{current_version}").start()
 
     def on_mock_scenario_selected(self, scenario_name: str):
         """Injects a mock scenario into the assistant pipeline."""
