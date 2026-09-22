@@ -219,7 +219,32 @@ RELIC_ZH_MAP = {
     "Runic Cube": "符文魔方", "Runic Dome": "符文圆顶", "Runic Pyramid": "符文金字塔",
     "SacredBark": "神圣树皮", "Slaver's Collar": "奴隶贩子项圈", "Snecko Eye": "异蛇之眼",
     "Sozu": "添水", "Velvet Choker": "天鹅绒项圈", "VioletLotus": "紫罗兰莲花",
-    "WristBlade": "手腕刀"
+    "WristBlade": "手腕刀",
+
+    # Remaining Relics (Total 169)
+    "Black Blood": "黑血", "Bloody Idol": "鲜血神像", "Cables": "金壳虫丝", "Cauldron": "大金坩埚",
+    "Chameleon Ring": "变色龙之戒", "Chemical X": "化学物X", "Circlet": "无名头冠",
+    "ClockworkSouvenir": "发条纪念品", "CultistMask": "邪教徒面具", "DataDisk": "数据磁盘",
+    "Derp Rock": "呆呆石", "Discerning Monocle": "单片眼镜", "Dodecahedron": "十二面体",
+    "DollysMirror": "多利之镜", "Emotion Chip": "情感芯片", "Enchiridion": "机械手抄本",
+    "Eternal Feather": "永恒羽毛", "FaceOfCleric": "牧师的面具", "Frozen Egg": "冻结之蛋",
+    "Frozen Eye": "冻结之眼", "FrozenCore": "冻结核心", "Golden Idol": "黄金神像",
+    "GremlinMask": "地精面具", "HandDrill": "手摇钻", "Lee's Waffle": "李氏华夫饼",
+    "Living Blade": "活体刀刃", "Magic Flower": "魔法花朵", "Mark of the Bloom": "盛开之印",
+    "Medical Kit": "医疗箱", "Membership Card": "会员卡", "Molten Egg": "熔火之卵",
+    "Molten Egg 2": "熔岩之蛋", "Necronomicon": "死灵之书", "NeowsBlessing": "涅奥的悲悯",
+    "Nilry's Codex": "尼利的宝典", "Nine Lives": "九命", "Nloth's Gift": "恩洛斯的礼物",
+    "NlothsMask": "恩洛斯的面具", "Nullstone Periapt": "废石护符", "Odd Mushroom": "奇异蘑菇",
+    "OrangePellets": "橙色药丸", "Orrery": "天象仪", "Red Circlet": "红头冠",
+    "Red Mask": "红面具", "Red Skull": "红色头骨", "Ring of the Serpent": "蛇之戒",
+    "Runic Capacitor": "符文电容", "Self Forming Clay": "自塑黏土", "Sling": "投石索",
+    "Snake Skull": "蛇头骨", "Spirit Poop": "灵魂之屎", "SsserpentHead": "异蛇之首",
+    "Strange Spoon": "奇怪的勺子", "Symbiotic Virus": "共生病毒",
+    "Test 1": "测试遗物1", "Test 2": "测试遗物2", "Test 3": "测试遗物3", "Test 4": "测试遗物4",
+    "Test 5": "测试遗物5", "Test 6": "测试遗物6", "Test 7": "测试遗物7", "Test 8": "测试遗物8",
+    "The Specimen": "标本", "TheAbacus": "算盘", "Tingsha": "廷夏", "Tiny House": "微型小屋",
+    "Toolbox": "工具箱", "Toxic Egg": "剧毒之蛋", "TwistedFunnel": "扭曲漏斗",
+    "White Beast Statue": "白兽雕像"
 }
 
 class KnowledgeBase:

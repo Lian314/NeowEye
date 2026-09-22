@@ -430,5 +430,168 @@ class TestE2EPipeline(unittest.TestCase):
             bridge._thread.join(timeout=2.0)
             self.assertFalse(bridge._thread.is_alive())
 
+    def test_dynamic_draw_pile_expansion(self):
+        """
+        Player has 2 energy. Hand has Pommel Strike (9 dmg, draw 1, cost 1).
+        Enemy has 15 HP and attacks for 15 damage.
+        Draw pile has Strike_R (6 dmg, cost 1).
+        Pommel Strike deals 9 dmg, draws Strike_R, which is then played for 6 dmg -> lethal!
+        Attack cancelled -> 0 HP loss!
+        """
+        combat_state = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 2, "powers": [], "relics": []},
+            "monsters": [{
+                "name": "Cultist",
+                "current_hp": 15,
+                "max_hp": 50,
+                "block": 0,
+                "intent": "ATTACK",
+                "move_adjusted_damage": 15,
+                "move_hits": 1,
+                "is_gone": False,
+                "half_dead": False,
+                "powers": []
+            }],
+            "hand": [{"id": "Pommel Strike", "name": "Pommel Strike", "cost": 1, "type": "ATTACK"}],
+            "draw_pile": [{"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"}]
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.monsters_killed, 1)
+        self.assertEqual(plan.projected_incoming_damage, 0)
+        self.assertEqual(plan.projected_hp_loss, 0)
+        self.assertEqual(len(plan.steps), 2)
+        self.assertEqual(plan.steps[0].card_info.name, "Pommel Strike")
+        self.assertEqual(plan.steps[1].card_info.name, "Strike")
+
+    def test_exhaust_feel_no_pain_and_dark_embrace(self):
+        """
+        Player has Feel No Pain (amount 1, +3 block on exhaust) and Dark Embrace (amount 1, +1 draw on exhaust).
+        Player plays Seeing Red (cost 1, gain 2 energy, exhaust True).
+        Seeing Red exhausts -> gives +3 block and draws Defend_R (5 block, cost 1).
+        Player then plays Defend_R -> total block = 3 + 5 = 8 block!
+        """
+        combat_state = {
+            "player": {
+                "current_hp": 80, "max_hp": 80, "block": 0, "energy": 1,
+                "powers": [{"id": "Feel No Pain", "amount": 1}, {"id": "Dark Embrace", "amount": 1}],
+                "relics": []
+            },
+            "monsters": [{
+                "name": "Jaw Worm", "current_hp": 40, "max_hp": 40, "block": 0,
+                "intent": "ATTACK", "move_adjusted_damage": 8, "move_hits": 1,
+                "is_gone": False, "half_dead": False, "powers": []
+            }],
+            "hand": [{"id": "Seeing Red", "name": "Seeing Red", "cost": 1, "type": "SKILL"}],
+            "draw_pile": [{"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"}]
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertIsNotNone(plan)
+        self.assertGreaterEqual(plan.projected_block, 8)
+        self.assertEqual(plan.projected_hp_loss, 0)
+
+    def test_corruption_zero_cost_skills(self):
+        """
+        Player has Corruption power (Skills cost 0 and exhaust).
+        Hand has Impervious (cost 2 -> 0) and Shrug It Off (cost 1 -> 0).
+        Player only has 1 energy, yet can play both skills!
+        """
+        combat_state = {
+            "player": {
+                "current_hp": 80, "max_hp": 80, "block": 0, "energy": 1,
+                "powers": [{"id": "Corruption", "amount": 1}],
+                "relics": []
+            },
+            "monsters": [{
+                "name": "Louse", "current_hp": 20, "max_hp": 20, "block": 0,
+                "intent": "ATTACK", "move_adjusted_damage": 10, "move_hits": 1,
+                "is_gone": False, "half_dead": False, "powers": []
+            }],
+            "hand": [
+                {"id": "Impervious", "name": "Impervious", "cost": 2, "type": "SKILL"},
+                {"id": "Shrug It Off", "name": "Shrug It Off", "cost": 1, "type": "SKILL"}
+            ]
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertIsNotNone(plan)
+        self.assertEqual(len(plan.steps), 2)
+        # Impervious (30) + Shrug It Off (8) = 38 block
+        self.assertGreaterEqual(plan.projected_block, 38)
+        self.assertEqual(plan.projected_hp_loss, 0)
+
+    def test_enemy_artifact_negates_vulnerable(self):
+        """
+        Enemy has Artifact 1.
+        Player plays Bash (8 dmg, 2 vuln).
+        Artifact consumes the Vulnerable. Enemy takes 8 dmg, vuln remains 0.
+        Subsequent Strike deals 6 dmg (not 6 * 1.5 = 9).
+        """
+        cultist = SimMonster(
+            index=0, id="Cultist", name="Cultist", current_hp=30, max_hp=50, block=0,
+            intent="ATTACK", move_adjusted_damage=10, is_attacking=True, artifact=1
+        )
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=3)
+        bash = resolve_card_info({"id": "Bash", "name": "Bash", "cost": 2, "type": "ATTACK"})
+        strike = resolve_card_info({"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"})
+
+        # Play Bash
+        p1, m1, s1, drawn, dp, dcp = self.solver._simulate_play_card(player, [cultist], 0, bash, 0)
+        self.assertEqual(m1[0].artifact, 0)
+        self.assertEqual(m1[0].vulnerable_turns, 0)
+        self.assertEqual(m1[0].current_hp, 22)
+
+        # Play Strike
+        p2, m2, s2, drawn, dp, dcp = self.solver._simulate_play_card(p1, m1, 1, strike, 0)
+        self.assertEqual(m2[0].current_hp, 16)  # 22 - 6 = 16 (no vuln multiplier)
+
+    def test_enemy_curl_up_and_thorns(self):
+        """
+        Enemy has Curl Up 5 and Thorns 3.
+        Player has 20 HP, 0 block.
+        Player plays Strike (6 dmg).
+        Enemy curls up (+5 block), absorbing 5 dmg, taking 1 dmg.
+        Enemy Thorns deals 3 damage back to player (HP drops to 17).
+        """
+        louse = SimMonster(
+            index=0, id="Louse", name="Louse", current_hp=15, max_hp=15, block=0,
+            intent="ATTACK", move_adjusted_damage=5, is_attacking=True,
+            curl_up=5, thorns=3
+        )
+        player = SimPlayer(current_hp=20, max_hp=20, block=0, energy=3)
+        strike = resolve_card_info({"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"})
+
+        p1, m1, s1, drawn, dp, dcp = self.solver._simulate_play_card(player, [louse], 0, strike, 0)
+        # Curl up triggered
+        self.assertEqual(m1[0].curl_up, 0)
+        # 6 dmg - 5 curl block = 1 dmg to HP (15 - 1 = 14)
+        self.assertEqual(m1[0].current_hp, 14)
+        # Thorns reflected 3 dmg to player (20 - 3 = 17)
+        self.assertEqual(p1.current_hp, 17)
+
+    def test_card_aliases_and_registry_resolution(self):
+        """
+        Verifies exact resolution of internal game/mod IDs and newly registered cards.
+        """
+        claw = resolve_card_info({"id": "Gash"})
+        self.assertEqual(claw.card_type, "ATTACK")
+        self.assertEqual(claw.base_damage, 3)
+
+        adren = resolve_card_info({"id": "Adrenaline", "upgraded": True})
+        self.assertEqual(adren.energy_gain, 2)
+        self.assertEqual(adren.draw_cards, 2)
+        self.assertTrue(adren.exhausts)
+
+        ball = resolve_card_info({"id": "Ball Lightning"})
+        self.assertEqual(ball.base_damage, 7)
+        self.assertEqual(ball.channel_orb, "Lightning")
+        self.assertEqual(ball.channel_count, 1)
+
+        apoth = resolve_card_info({"id": "Apotheosis"})
+        self.assertEqual(apoth.cost, 2)
+        self.assertTrue(apoth.exhausts)
+
+        sneaky = resolve_card_info({"id": "Underhanded Strike"})
+        self.assertEqual(sneaky.base_damage, 12)
+
 if __name__ == "__main__":
     unittest.main()

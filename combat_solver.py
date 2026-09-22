@@ -43,6 +43,9 @@ class SimMonster:
     weak_turns: int = 0
     strength: int = 0
     poison: int = 0
+    artifact: int = 0
+    curl_up: int = 0
+    thorns: int = 0
     is_gone: bool = False
     half_dead: bool = False
 
@@ -81,6 +84,9 @@ class SimPlayer:
     has_paper_crane: bool = False
     has_strike_dummy: bool = False
     accuracy_bonus: int = 0  # Silent shiv bonus
+    feel_no_pain: int = 0    # Ironclad exhaust synergy (+3/4 block per exhaust)
+    dark_embrace: int = 0    # Ironclad exhaust synergy (+1 draw per exhaust)
+    has_corruption: bool = False  # Ironclad power (Skills cost 0 and exhaust)
 
 @dataclass
 class PlayStep:
@@ -134,6 +140,12 @@ class CombatSolver:
         monsters = [self._parse_monster(idx, m) for idx, m in enumerate(monsters_data)]
         active_monsters = [m for m in monsters if m.is_alive]
 
+        # Parse draw & discard piles
+        raw_draw = combat_state.get("draw_pile", [])
+        raw_discard = combat_state.get("discard_pile", [])
+        draw_pile: List[CardInfo] = [resolve_card_info(c) for c in raw_draw if isinstance(c, dict)]
+        discard_pile: List[CardInfo] = [resolve_card_info(c) for c in raw_discard if isinstance(c, dict)]
+
         # Parse playable cards
         hand_cards: List[Tuple[int, CardInfo]] = []
         for idx, c in enumerate(raw_hand):
@@ -154,10 +166,10 @@ class CombatSolver:
         best_score = -float("inf")
         evaluated_states = 0
 
-        stack = [(player, monsters, hand_cards, [])]
+        stack = [(player, monsters, hand_cards, draw_pile, discard_pile, [])]
 
         while stack and evaluated_states < self.config.max_evaluated_states:
-            curr_player, curr_monsters, curr_hand, curr_steps = stack.pop()
+            curr_player, curr_monsters, curr_hand, curr_draw, curr_discard, curr_steps = stack.pop()
             evaluated_states += 1
 
             plan = self._evaluate_state(curr_player, curr_monsters, curr_steps, initial_incoming)
@@ -171,10 +183,11 @@ class CombatSolver:
 
             seen_branches = set()
             for i, (orig_idx, card) in enumerate(curr_hand):
-                if card.cost > curr_player.energy:
+                effective_cost = 0 if (curr_player.has_corruption and card.card_type == "SKILL") else card.cost
+                if effective_cost > curr_player.energy:
                     continue
 
-                card_key = (card.id, card.cost)
+                card_key = (card.id, effective_cost)
                 next_hand = curr_hand[:i] + curr_hand[i+1:]
                 living_monsters = [m for m in curr_monsters if m.is_alive]
                 if not living_monsters:
@@ -187,19 +200,21 @@ class CombatSolver:
                             continue
                         seen_branches.add(branch_key)
 
-                        next_player, next_monsters, step = self._simulate_play_card(
-                            curr_player, curr_monsters, orig_idx, card, target.index
+                        next_player, next_monsters, step, newly_drawn, next_draw, next_discard = self._simulate_play_card(
+                            curr_player, curr_monsters, orig_idx, card, target.index, curr_draw, curr_discard
                         )
-                        stack.append((next_player, next_monsters, next_hand, curr_steps + [step]))
+                        branch_hand = next_hand + newly_drawn
+                        stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_steps + [step]))
                 else:
                     if card_key in seen_branches:
                         continue
                     seen_branches.add(card_key)
 
-                    next_player, next_monsters, step = self._simulate_play_card(
-                        curr_player, curr_monsters, orig_idx, card, None
+                    next_player, next_monsters, step, newly_drawn, next_draw, next_discard = self._simulate_play_card(
+                        curr_player, curr_monsters, orig_idx, card, None, curr_draw, curr_discard
                     )
-                    stack.append((next_player, next_monsters, next_hand, curr_steps + [step]))
+                    branch_hand = next_hand + newly_drawn
+                    stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_steps + [step]))
 
         if best_plan is None:
             best_plan = self._evaluate_state(player, monsters, [], initial_incoming)
@@ -252,18 +267,56 @@ class CombatSolver:
         monsters: List[SimMonster],
         orig_idx: int,
         card: CardInfo,
-        target_idx: Optional[int]
-    ) -> Tuple[SimPlayer, List[SimMonster], PlayStep]:
+        target_idx: Optional[int],
+        draw_pile: Optional[List[CardInfo]] = None,
+        discard_pile: Optional[List[CardInfo]] = None,
+    ) -> Tuple[SimPlayer, List[SimMonster], PlayStep, List[Tuple[int, CardInfo]], List[CardInfo], List[CardInfo]]:
         """Simulates state transition for a card play across all classes."""
         new_player = copy.deepcopy(player)
         new_monsters = copy.deepcopy(monsters)
-        new_player.energy -= card.cost
+        effective_cost = 0 if (new_player.has_corruption and card.card_type == "SKILL") else card.cost
+        new_player.energy -= effective_cost
 
         step = PlayStep(
             card_index=orig_idx,
             card_info=card,
             target_monster_index=target_idx
         )
+
+        # 0. Exhaust handling & Feel No Pain synergy
+        is_exhaust = card.exhausts or (new_player.has_corruption and card.card_type == "SKILL")
+        if is_exhaust:
+            step.notes += "(消耗) "
+            if new_player.feel_no_pain > 0:
+                fnp_block = new_player.feel_no_pain * 3
+                new_player.block += fnp_block
+                step.block_gained += fnp_block
+                step.notes += f"+{fnp_block}格挡(无惧疼痛) "
+
+        # 0.5. Card Drawing & Dark Embrace synergy
+        cards_to_draw = card.draw_cards
+        if is_exhaust and new_player.dark_embrace > 0:
+            cards_to_draw += new_player.dark_embrace
+            step.notes += f"+{new_player.dark_embrace}抽牌(黑暗之拥) "
+
+        next_draw_pile = list(draw_pile) if draw_pile is not None else []
+        next_discard_pile = list(discard_pile) if discard_pile is not None else []
+        newly_drawn: List[Tuple[int, CardInfo]] = []
+
+        if cards_to_draw > 0:
+            for _ in range(cards_to_draw):
+                if next_draw_pile:
+                    drawn_card = next_draw_pile.pop(0)
+                    newly_drawn.append((1000 + len(newly_drawn), drawn_card))
+                elif next_discard_pile:
+                    next_draw_pile = list(next_discard_pile)
+                    next_discard_pile = []
+                    drawn_card = next_draw_pile.pop(0)
+                    newly_drawn.append((1000 + len(newly_drawn), drawn_card))
+                else:
+                    break
+            if newly_drawn:
+                step.notes += f"抽{len(newly_drawn)}牌 "
 
         # 1. Stance Changes (Watcher)
         if card.stance:
@@ -299,7 +352,7 @@ class CombatSolver:
             new_player.block += block
             step.block_gained += block
 
-        # 4. Powers / Buffs
+        # 4. Powers / Buffs & Skill Debuffs (Artifact check)
         if card.strength_applied > 0:
             new_player.strength += card.strength_applied
             step.notes += f"+{card.strength_applied}力量 "
@@ -307,17 +360,61 @@ class CombatSolver:
             new_player.dexterity += card.dexterity_applied
             step.notes += f"+{card.dexterity_applied}敏捷 "
 
-        # 5. Silent Poison Stacking & Catalyst
+        if card.card_type != "ATTACK":
+            if card.vulnerable_applied > 0:
+                if card.is_aoe:
+                    for m in new_monsters:
+                        if m.is_alive:
+                            if m.artifact > 0:
+                                m.artifact -= 1
+                                step.notes += f"{m.name} 人工制品抵消易伤 "
+                            else:
+                                m.vulnerable_turns += card.vulnerable_applied
+                elif target_idx is not None and 0 <= target_idx < len(new_monsters):
+                    target = new_monsters[target_idx]
+                    if target.artifact > 0:
+                        target.artifact -= 1
+                        step.notes += f"{target.name} 人工制品抵消易伤 "
+                    else:
+                        target.vulnerable_turns += card.vulnerable_applied
+                        step.notes += f"给予{card.vulnerable_applied}易伤 "
+            if card.weak_applied > 0:
+                if card.is_aoe:
+                    for m in new_monsters:
+                        if m.is_alive:
+                            if m.artifact > 0:
+                                m.artifact -= 1
+                                step.notes += f"{m.name} 人工制品抵消虚弱 "
+                            else:
+                                m.weak_turns += card.weak_applied
+                elif target_idx is not None and 0 <= target_idx < len(new_monsters):
+                    target = new_monsters[target_idx]
+                    if target.artifact > 0:
+                        target.artifact -= 1
+                        step.notes += f"{target.name} 人工制品抵消虚弱 "
+                    else:
+                        target.weak_turns += card.weak_applied
+                        step.notes += f"给予{card.weak_applied}虚弱 "
+
+        # 5. Silent Poison Stacking & Catalyst (Artifact check)
         if card.poison_applied > 0:
             if card.is_aoe:
                 for m in new_monsters:
                     if m.is_alive:
-                        m.poison += card.poison_applied
+                        if m.artifact > 0:
+                            m.artifact -= 1
+                            step.notes += f"{m.name} 人工制品抵消中毒 "
+                        else:
+                            m.poison += card.poison_applied
                 step.notes += f"全员+{card.poison_applied}毒 "
             elif target_idx is not None and 0 <= target_idx < len(new_monsters):
                 target = new_monsters[target_idx]
-                target.poison += card.poison_applied
-                step.notes += f"+{card.poison_applied}毒 "
+                if target.artifact > 0:
+                    target.artifact -= 1
+                    step.notes += f"{target.name} 人工制品抵消中毒 "
+                else:
+                    target.poison += card.poison_applied
+                    step.notes += f"+{card.poison_applied}毒 "
 
         if card.id.startswith("Catalyst") and target_idx is not None and 0 <= target_idx < len(new_monsters):
             target = new_monsters[target_idx]
@@ -414,6 +511,19 @@ class CombatSolver:
                 for m in new_monsters:
                     if not m.is_alive:
                         continue
+                    # Monster Curl Up
+                    if m.curl_up > 0:
+                        m.block += m.curl_up
+                        step.notes += f"{m.name} 卷曲+{m.curl_up}甲 "
+                        m.curl_up = 0
+                    # Monster Thorns
+                    if m.thorns > 0:
+                        thorns_dmg = m.thorns * hits
+                        unblocked_thorns = max(0, thorns_dmg - new_player.block)
+                        new_player.block = max(0, new_player.block - thorns_dmg)
+                        new_player.current_hp = max(0, new_player.current_hp - unblocked_thorns)
+                        step.notes += f"荆棘反伤{thorns_dmg} "
+
                     final_dmg = dmg
                     if m.vulnerable_turns > 0:
                         final_dmg = math.floor(final_dmg * vuln_mult)
@@ -423,14 +533,35 @@ class CombatSolver:
                     m.current_hp = max(0, m.current_hp - unblocked)
                     total_dealt += final_dmg
                     if card.vulnerable_applied > 0:
-                        m.vulnerable_turns += card.vulnerable_applied
+                        if m.artifact > 0:
+                            m.artifact -= 1
+                            step.notes += f"{m.name} 人工制品抵消易伤 "
+                        else:
+                            m.vulnerable_turns += card.vulnerable_applied
                     if card.weak_applied > 0:
-                        m.weak_turns += card.weak_applied
+                        if m.artifact > 0:
+                            m.artifact -= 1
+                            step.notes += f"{m.name} 人工制品抵消虚弱 "
+                        else:
+                            m.weak_turns += card.weak_applied
                 step.damage_dealt += total_dealt
             elif target_idx is not None and 0 <= target_idx < len(new_monsters):
                 target = new_monsters[target_idx]
                 step.target_name = target.name
                 if target.is_alive:
+                    # Monster Curl Up
+                    if target.curl_up > 0:
+                        target.block += target.curl_up
+                        step.notes += f"{target.name} 卷曲+{target.curl_up}甲 "
+                        target.curl_up = 0
+                    # Monster Thorns
+                    if target.thorns > 0:
+                        thorns_dmg = target.thorns * hits
+                        unblocked_thorns = max(0, thorns_dmg - new_player.block)
+                        new_player.block = max(0, new_player.block - thorns_dmg)
+                        new_player.current_hp = max(0, new_player.current_hp - unblocked_thorns)
+                        step.notes += f"荆棘反伤{thorns_dmg} "
+
                     final_dmg = dmg
                     if target.vulnerable_turns > 0:
                         final_dmg = math.floor(final_dmg * vuln_mult)
@@ -440,13 +571,21 @@ class CombatSolver:
                     target.current_hp = max(0, target.current_hp - unblocked)
                     step.damage_dealt += final_dmg
                     if card.vulnerable_applied > 0:
-                        target.vulnerable_turns += card.vulnerable_applied
-                        step.notes += f"给予{card.vulnerable_applied}易伤 "
+                        if target.artifact > 0:
+                            target.artifact -= 1
+                            step.notes += f"{target.name} 人工制品抵消易伤 "
+                        else:
+                            target.vulnerable_turns += card.vulnerable_applied
+                            step.notes += f"给予{card.vulnerable_applied}易伤 "
                     if card.weak_applied > 0:
-                        target.weak_turns += card.weak_applied
-                        step.notes += f"给予{card.weak_applied}虚弱 "
+                        if target.artifact > 0:
+                            target.artifact -= 1
+                            step.notes += f"{target.name} 人工制品抵消虚弱 "
+                        else:
+                            target.weak_turns += card.weak_applied
+                            step.notes += f"给予{card.weak_applied}虚弱 "
 
-        return new_player, new_monsters, step
+        return new_player, new_monsters, step, newly_drawn, next_draw_pile, next_discard_pile
 
     def _evaluate_state(
         self,
@@ -643,7 +782,10 @@ class CombatSolver:
             has_paper_frog=("Paper Frog" in relic_ids),
             has_paper_crane=("Paper Crane" in relic_ids),
             has_strike_dummy=("StrikeDummy" in relic_ids),
-            accuracy_bonus=powers.get("Accuracy", 0)
+            accuracy_bonus=powers.get("Accuracy", 0),
+            feel_no_pain=powers.get("Feel No Pain", 0),
+            dark_embrace=powers.get("Dark Embrace", 0),
+            has_corruption=("Corruption" in powers)
         )
 
         # Anchor relic (+10 block on turn 1)
@@ -686,6 +828,9 @@ class CombatSolver:
             weak_turns=powers.get("Weak", 0),
             strength=powers.get("Strength", 0),
             poison=powers.get("Poison", 0),
+            artifact=powers.get("Artifact", 0),
+            curl_up=powers.get("Curl Up", 0),
+            thorns=powers.get("Thorns", 0),
             is_gone=bool(data.get("is_gone", False)),
             half_dead=bool(data.get("half_dead", False))
         )

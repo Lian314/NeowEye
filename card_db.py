@@ -98,17 +98,25 @@ CARD_STAT_REGISTRY: Dict[str, Dict[str, Any]] = {
     "Uppercut": {"cost": 2, "type": "ATTACK", "target": "ENEMY", "dmg": 13, "dmg+": 13, "vuln": 1, "vuln+": 2, "weak": 1, "weak+": 2},
     "Whirlwind": {"cost": -1, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 5, "dmg+": 8, "aoe": True},
     "Barricade": {"cost": 3, "cost+": 2, "type": "POWER", "target": "SELF"},
+    "Berserk": {"cost": 0, "type": "POWER", "target": "SELF", "vuln": 2, "vuln+": 1},
     "Bludgeon": {"cost": 3, "type": "ATTACK", "target": "ENEMY", "dmg": 32, "dmg+": 42},
+    "Brutality": {"cost": 0, "type": "POWER", "target": "SELF"},
     "Corruption": {"cost": 3, "cost+": 2, "type": "POWER", "target": "SELF"},
     "Demon Form": {"cost": 3, "type": "POWER", "target": "SELF"},
     "Double Tap": {"cost": 1, "type": "SKILL", "target": "SELF"},
+    "Evolve": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Exhume": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
     "Feed": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 10, "dmg+": 12, "exhaust": True},
     "Fiend Fire": {"cost": 2, "type": "ATTACK", "target": "ENEMY", "dmg": 7, "dmg+": 10, "exhaust": True},
+    "Havoc": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF"},
     "Immolate": {"cost": 2, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 21, "dmg+": 28, "aoe": True},
     "Impervious": {"cost": 2, "type": "SKILL", "target": "SELF", "blk": 30, "blk+": 40, "exhaust": True},
+    "Juggernaut": {"cost": 2, "type": "POWER", "target": "SELF"},
     "Limit Break": {"cost": 1, "type": "SKILL", "target": "SELF", "exhaust": True},
     "Offering": {"cost": 0, "type": "SKILL", "target": "SELF", "energy": 2, "energy+": 2, "draw": 3, "draw+": 5, "exhaust": True},
     "Reaper": {"cost": 2, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 4, "dmg+": 5, "aoe": True},
+    "Rupture": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Searing Blow": {"cost": 2, "type": "ATTACK", "target": "ENEMY", "dmg": 12, "dmg+": 16},
 
     # =========================================================================
     # THE SILENT (静默猎手)
@@ -170,6 +178,24 @@ CARD_STAT_REGISTRY: Dict[str, Dict[str, Any]] = {
     "Storm of Steel": {"cost": 1, "type": "SKILL", "target": "SELF"},
     "Unload": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 14, "dmg+": 18},
     "Wraith Form": {"cost": 3, "type": "POWER", "target": "SELF"},
+    "Accuracy": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Adrenaline": {"cost": 0, "type": "SKILL", "target": "SELF", "energy": 1, "energy+": 2, "draw": 2, "draw+": 2, "exhaust": True},
+    "Alchemize": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Bullet Time": {"cost": 3, "cost+": 2, "type": "SKILL", "target": "SELF"},
+    "Calculated Gamble": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Caltrops": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Concentrate": {"cost": 0, "type": "SKILL", "target": "SELF", "energy": 2, "energy+": 2},
+    "Distraction": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Doppelganger": {"cost": -1, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Expertise": {"cost": 1, "type": "SKILL", "target": "SELF", "draw": 6, "draw+": 7},
+    "Footwork": {"cost": 1, "type": "POWER", "target": "SELF", "dex": 2, "dex+": 3},
+    "Infinite Blades": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Nightmare": {"cost": 3, "cost+": 2, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Noxious Fumes": {"cost": 1, "type": "POWER", "target": "SELF", "poison": 2, "poison+": 3},
+    "Reflex": {"cost": -2, "type": "SKILL", "target": "NONE", "draw": 2, "draw+": 3},
+    "Setup": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF"},
+    "Tactician": {"cost": -2, "type": "SKILL", "target": "NONE", "energy": 1, "energy+": 2},
+    "Tools of the Trade": {"cost": 1, "cost+": 0, "type": "POWER", "target": "SELF"},
 
     # =========================================================================
     # DEFECT (故障机器人)
@@ -236,6 +262,20 @@ CARD_STAT_REGISTRY: Dict[str, Dict[str, Any]] = {
     "Reboot": {"cost": 0, "type": "SKILL", "target": "SELF", "draw": 4, "draw+": 6, "exhaust": True},
     "Seek": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
     "Thunder Strike": {"cost": 3, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 7, "dmg+": 9, "aoe": True},
+    "Aggregate": {"cost": 1, "type": "SKILL", "target": "SELF"},
+    "Amplify": {"cost": 1, "type": "SKILL", "target": "SELF"},
+    "Ball Lightning": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 7, "dmg+": 10, "channel_orb": "Lightning", "channel_cnt": 1},
+    "Capacitor": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Core Surge": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 11, "dmg+": 15, "exhaust": True},
+    "Equilibrium": {"cost": 2, "type": "SKILL", "target": "SELF", "blk": 13, "blk+": 16},
+    "Force Field": {"cost": 4, "type": "SKILL", "target": "SELF", "blk": 12, "blk+": 16},
+    "Hello World": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Lock-On": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 8, "dmg+": 11},
+    "Loop": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Machine Learning": {"cost": 1, "type": "POWER", "target": "SELF", "draw": 1, "draw+": 1},
+    "Recursion": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "evoke": 1},
+    "Self Repair": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Static Discharge": {"cost": 1, "type": "POWER", "target": "SELF"},
 
     # =========================================================================
     # COLORLESS / STATUS / CURSES (通用、状态与诅咒)
@@ -255,6 +295,84 @@ CARD_STAT_REGISTRY: Dict[str, Dict[str, Any]] = {
     "Normality": {"cost": -2, "type": "CURSE", "target": "NONE"},
     "Pain": {"cost": -2, "type": "CURSE", "target": "NONE"},
     "Regret": {"cost": -2, "type": "CURSE", "target": "NONE"},
+
+    # Colorless
+    "Apotheosis": {"cost": 2, "cost+": 1, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Bandage Up": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Blind": {"cost": 0, "type": "SKILL", "target": "ENEMY", "weak": 2, "weak+": 2},
+    "Chrysalis": {"cost": 2, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Dark Shackles": {"cost": 0, "type": "SKILL", "target": "ENEMY", "exhaust": True},
+    "Deep Breath": {"cost": 0, "type": "SKILL", "target": "SELF", "draw": 1, "draw+": 2},
+    "Dramatic Entrance": {"cost": 0, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 8, "dmg+": 12, "aoe": True, "exhaust": True},
+    "Enlightenment": {"cost": 0, "type": "SKILL", "target": "SELF"},
+    "Finesse": {"cost": 0, "type": "SKILL", "target": "SELF", "blk": 2, "blk+": 4, "draw": 1, "draw+": 1},
+    "Flash of Steel": {"cost": 0, "type": "ATTACK", "target": "ENEMY", "dmg": 3, "dmg+": 6, "draw": 1, "draw+": 1},
+    "Good Instincts": {"cost": 0, "type": "SKILL", "target": "SELF", "blk": 6, "blk+": 9},
+    "HandOfGreed": {"cost": 2, "type": "ATTACK", "target": "ENEMY", "dmg": 20, "dmg+": 25},
+    "Hand of Greed": {"cost": 2, "type": "ATTACK", "target": "ENEMY", "dmg": 20, "dmg+": 25},
+    "Jack Of All Trades": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Madness": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Magnetism": {"cost": 2, "cost+": 1, "type": "POWER", "target": "SELF"},
+    "Master of Strategy": {"cost": 0, "type": "SKILL", "target": "SELF", "draw": 3, "draw+": 4, "exhaust": True},
+    "Mayhem": {"cost": 2, "cost+": 1, "type": "POWER", "target": "SELF"},
+    "Metamorphosis": {"cost": 2, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Mind Blast": {"cost": 2, "cost+": 1, "type": "ATTACK", "target": "ENEMY"},
+    "Panacea": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Panache": {"cost": 0, "type": "POWER", "target": "SELF"},
+    "PanicButton": {"cost": 0, "type": "SKILL", "target": "SELF", "blk": 30, "blk+": 40, "exhaust": True},
+    "Panic Button": {"cost": 0, "type": "SKILL", "target": "SELF", "blk": 30, "blk+": 40, "exhaust": True},
+    "Purity": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "RitualDagger": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 15, "exhaust": True},
+    "Ritual Dagger": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 15, "exhaust": True},
+    "Sadistic Nature": {"cost": 0, "type": "POWER", "target": "SELF"},
+    "Secret Technique": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Secret Weapon": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Swift Strike": {"cost": 0, "type": "ATTACK", "target": "ENEMY", "dmg": 7, "dmg+": 10},
+    "The Bomb": {"cost": 2, "type": "SKILL", "target": "SELF"},
+    "Thinking Ahead": {"cost": 0, "type": "SKILL", "target": "SELF", "draw": 2, "exhaust": True},
+    "Transmutation": {"cost": -1, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Trip": {"cost": 0, "type": "SKILL", "target": "ENEMY", "vuln": 2, "vuln+": 2},
+
+    # Curses
+    "Clumsy": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Decay": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Doubt": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Injury": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Necronomicurse": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Parasite": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Pride": {"cost": 1, "type": "CURSE", "target": "NONE", "exhaust": True},
+    "Shame": {"cost": -2, "type": "CURSE", "target": "NONE"},
+    "Writhe": {"cost": -2, "type": "CURSE", "target": "NONE"},
+
+    # Internal IDs, Aliases & Deprecated
+    "Gash": {"cost": 0, "type": "ATTACK", "target": "ENEMY", "dmg": 3, "dmg+": 5},
+    "Prime": {"cost": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Allocate": {"cost": 1, "type": "POWER", "target": "SELF", "focus": 4, "focus+": 5},
+    "Underhanded Strike": {"cost": 2, "type": "ATTACK", "target": "ENEMY", "dmg": 12, "dmg+": 16},
+    "Lockon": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 8, "dmg+": 11},
+    "Night Terror": {"cost": 3, "cost+": 2, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Redo": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "evoke": 1},
+    "Undo": {"cost": 2, "type": "SKILL", "target": "SELF", "blk": 13, "blk+": 16},
+    "Steam Power": {"cost": 0, "type": "SKILL", "target": "SELF", "draw": 2, "draw+": 3},
+    "Steam": {"cost": 0, "type": "SKILL", "target": "SELF", "blk": 6, "blk+": 8},
+    "Conserve Battery": {"cost": 1, "type": "SKILL", "target": "SELF", "blk": 7, "blk+": 10},
+    "Crippling Poison": {"cost": 2, "type": "SKILL", "target": "ALL_ENEMY", "poison": 4, "poison+": 7, "weak": 2, "weak+": 2, "aoe": True, "exhaust": True},
+    "Wraith Form v2": {"cost": 3, "type": "POWER", "target": "SELF"},
+    "Ghostly": {"cost": 1, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Venomology": {"cost": 1, "cost+": 0, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Axe Kick": {"cost": 1, "type": "ATTACK", "target": "ENEMY", "dmg": 7, "dmg+": 10},
+    "Blaster": {"cost": 1, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 10, "dmg+": 13, "aoe": True},
+    "Cache": {"cost": 0, "type": "SKILL", "target": "SELF"},
+    "Channel": {"cost": 1, "type": "SKILL", "target": "SELF"},
+    "Energy Pulse": {"cost": -1, "type": "SKILL", "target": "SELF"},
+    "Flux Capacitor": {"cost": 2, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Hide": {"cost": 1, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Ice Wall": {"cost": 1, "type": "SKILL", "target": "SELF"},
+    "Impulse": {"cost": 1, "type": "SKILL", "target": "SELF", "exhaust": True},
+    "Nova": {"cost": 1, "type": "ATTACK", "target": "ALL_ENEMY", "dmg": 6, "dmg+": 9, "aoe": True},
+    "Primitive Tech": {"cost": 1, "type": "POWER", "target": "SELF"},
+    "Reprieve": {"cost": 1, "type": "SKILL", "target": "SELF"},
+    "Winter": {"cost": 1, "type": "SKILL", "target": "SELF"},
 }
 
 def resolve_card_info(raw_card: Dict[str, Any]) -> CardInfo:
@@ -299,6 +417,15 @@ def resolve_card_info(raw_card: Dict[str, Any]) -> CardInfo:
 
     # 2. Check Master CARD_STAT_REGISTRY (Exact stats for Ironclad, Silent, Defect, Colorless, Curses)
     stat = CARD_STAT_REGISTRY.get(clean_id) or CARD_STAT_REGISTRY.get(clean_name)
+    if not stat:
+        norm_id = re.sub(r"[^a-z0-9]", "", clean_id.lower())
+        norm_name = re.sub(r"[^a-z0-9]", "", clean_name.lower())
+        for reg_k, reg_v in CARD_STAT_REGISTRY.items():
+            reg_norm = re.sub(r"[^a-z0-9]", "", reg_k.lower())
+            if reg_norm == norm_id or reg_norm == norm_name:
+                stat = reg_v
+                break
+
     zh_name = GLOBAL_KB.get_card_zh_name(clean_id)
     if zh_name == clean_id:
         zh_name = GLOBAL_KB.get_card_zh_name(clean_name)
