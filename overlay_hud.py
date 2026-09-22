@@ -351,6 +351,19 @@ class OverlayHUD:
                 lbl_detail = tk.Label(step_row, text=" ".join(details), fg="#eccc68" if step.damage_dealt > 0 else "#2ed573", bg="#222738", font=("Microsoft YaHei UI", 8))
                 lbl_detail.pack(side="right")
 
+        if getattr(plan, "potion_uses", None):
+            potion_label = tk.Label(
+                steps_box,
+                text="⚠️ 建议使用药水: " + "、".join(plan.potion_uses),
+                fg="#ffa502",
+                bg="#222738",
+                font=("Microsoft YaHei UI", 8, "bold"),
+                anchor="w",
+                justify="left",
+                wraplength=320,
+            )
+            potion_label.pack(fill="x", pady=(4, 2))
+
         # Tactical Forecast Box
         pred_frame = tk.Frame(self.inner_frame, bg="#131620", padx=8, pady=6)
         pred_frame.pack(fill="x", side="bottom")

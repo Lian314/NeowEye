@@ -46,6 +46,11 @@ class SimMonster:
     artifact: int = 0
     curl_up: int = 0
     thorns: int = 0
+    time_eater_bonus: int = 0
+    awakened_one_bonus: int = 0
+    beat_of_death: int = 0
+    invincible_cap: int = 0
+    invincible_damage_taken: int = 0
     is_gone: bool = False
     half_dead: bool = False
 
@@ -87,6 +92,10 @@ class SimPlayer:
     feel_no_pain: int = 0    # Ironclad exhaust synergy (+3/4 block per exhaust)
     dark_embrace: int = 0    # Ironclad exhaust synergy (+1 draw per exhaust)
     has_corruption: bool = False  # Ironclad power (Skills cost 0 and exhaust)
+    time_eater_active: bool = False
+    cards_played_this_turn: int = 0
+    beat_of_death: int = 0
+    direct_damage_taken: int = 0
 
 @dataclass
 class PlayStep:
@@ -111,6 +120,7 @@ class CombatPlan:
     remaining_energy: int = 0
     final_stance: str = "None"
     end_of_turn_forecast: str = ""
+    potion_uses: List[str] = field(default_factory=list)
     score: float = 0.0
     computation_time_ms: float = 0.0
 
@@ -138,6 +148,16 @@ class CombatSolver:
 
         # Parse monsters
         monsters = [self._parse_monster(idx, m) for idx, m in enumerate(monsters_data)]
+        player.time_eater_active = any(self._is_time_eater(m) for m in monsters)
+        heart_monsters = [m for m in monsters if self._is_corrupt_heart(m)]
+        heart_beat_values = [m.beat_of_death for m in heart_monsters]
+        player.beat_of_death = max(heart_beat_values) if heart_beat_values else 0
+        if heart_monsters and player.beat_of_death <= 0:
+            player.beat_of_death = 1
+        for heart in heart_monsters:
+            if heart.invincible_cap <= 0:
+                heart.invincible_cap = 200
+        player.cards_played_this_turn = self._safe_int(combat_state.get("cards_played_this_turn"), 0)
         active_monsters = [m for m in monsters if m.is_alive]
 
         # Parse draw & discard piles
@@ -145,6 +165,7 @@ class CombatSolver:
         raw_discard = combat_state.get("discard_pile", [])
         draw_pile: List[CardInfo] = [resolve_card_info(c) for c in raw_draw if isinstance(c, dict)]
         discard_pile: List[CardInfo] = [resolve_card_info(c) for c in raw_discard if isinstance(c, dict)]
+        available_potions = [p for p in combat_state.get("potions", []) if isinstance(p, dict)]
 
         # Parse playable cards
         hand_cards: List[Tuple[int, CardInfo]] = []
@@ -156,8 +177,8 @@ class CombatSolver:
 
         initial_incoming = self._calculate_incoming_damage(active_monsters, player)
 
-        if not hand_cards or player.energy <= 0 or not active_monsters:
-            plan = self._evaluate_state(player, monsters, [], initial_incoming)
+        if not active_monsters:
+            plan = self._evaluate_state(player, monsters, [], initial_incoming, [])
             plan.computation_time_ms = round((time.time() - start_time) * 1000, 2)
             return plan
 
@@ -166,19 +187,47 @@ class CombatSolver:
         best_score = -float("inf")
         evaluated_states = 0
 
-        stack = [(player, monsters, hand_cards, draw_pile, discard_pile, [])]
+        stack = [(player, monsters, hand_cards, draw_pile, discard_pile, available_potions, [], [])]
 
         while stack and evaluated_states < self.config.max_evaluated_states:
-            curr_player, curr_monsters, curr_hand, curr_draw, curr_discard, curr_steps = stack.pop()
+            curr_player, curr_monsters, curr_hand, curr_draw, curr_discard, curr_potions, curr_potion_uses, curr_steps = stack.pop()
             evaluated_states += 1
 
-            plan = self._evaluate_state(curr_player, curr_monsters, curr_steps, initial_incoming)
+            plan = self._evaluate_state(curr_player, curr_monsters, curr_steps, initial_incoming, curr_potion_uses)
             if plan.score > best_score:
                 best_score = plan.score
                 best_plan = plan
 
             # Depth & energy bound
-            if len(curr_steps) >= self.config.max_search_depth or curr_player.energy <= 0:
+            if (
+                len(curr_steps) >= self.config.max_search_depth
+                or curr_player.energy <= 0
+                or (curr_player.time_eater_active and curr_player.cards_played_this_turn >= 12)
+            ):
+                card_actions_allowed = False
+            else:
+                card_actions_allowed = True
+
+            # Potion use is independent of energy and is limited by inventory.
+            for potion_index, potion in enumerate(curr_potions):
+                if not self._is_supported_potion(potion):
+                    continue
+                living_monsters = [m for m in curr_monsters if m.is_alive]
+                if not living_monsters:
+                    continue
+                targets = living_monsters if self._potion_targets_enemy(potion) else [None]
+                for target in targets:
+                    next_player, next_monsters, potion_name = self._simulate_potion(
+                        curr_player, curr_monsters, potion, target
+                    )
+                    next_potions = curr_potions[:potion_index] + curr_potions[potion_index + 1:]
+                    stack.append((
+                        next_player, next_monsters, list(curr_hand), list(curr_draw),
+                        list(curr_discard), next_potions, curr_potion_uses + [potion_name],
+                        list(curr_steps)
+                    ))
+
+            if not card_actions_allowed:
                 continue
 
             seen_branches = set()
@@ -204,7 +253,7 @@ class CombatSolver:
                             curr_player, curr_monsters, orig_idx, card, target.index, curr_draw, curr_discard
                         )
                         branch_hand = next_hand + newly_drawn
-                        stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_steps + [step]))
+                        stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_potions, curr_potion_uses, curr_steps + [step]))
                 else:
                     if card_key in seen_branches:
                         continue
@@ -214,13 +263,107 @@ class CombatSolver:
                         curr_player, curr_monsters, orig_idx, card, None, curr_draw, curr_discard
                     )
                     branch_hand = next_hand + newly_drawn
-                    stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_steps + [step]))
+                    stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_potions, curr_potion_uses, curr_steps + [step]))
 
         if best_plan is None:
             best_plan = self._evaluate_state(player, monsters, [], initial_incoming)
 
         best_plan.computation_time_ms = round((time.time() - start_time) * 1000, 2)
         return best_plan
+
+    def _is_supported_potion(self, potion: Dict[str, Any]) -> bool:
+        return str(potion.get("id", potion.get("name", ""))) in {
+            "Block Potion", "Dexterity Potion", "Strength Potion", "Energy Potion",
+            "Fire Potion", "Explosive Potion", "Weak Potion", "FearPotion", "Poison Potion",
+        }
+
+    def _is_time_eater(self, monster: SimMonster) -> bool:
+        normalized = "".join(ch for ch in f"{monster.id} {monster.name}".lower() if ch.isalnum())
+        return "timeeater" in normalized or "时光吞噬者" in normalized
+
+    def _is_awakened_one(self, monster: SimMonster) -> bool:
+        normalized = "".join(ch for ch in f"{monster.id} {monster.name}".lower() if ch.isalnum())
+        return "awakenedone" in normalized or "觉醒者" in normalized
+
+    def _is_corrupt_heart(self, monster: SimMonster) -> bool:
+        normalized = "".join(ch for ch in f"{monster.id} {monster.name}".lower() if ch.isalnum())
+        return "corruptheart" in normalized or "腐化之心" in normalized
+
+    def _effective_monster_damage(self, monster: SimMonster, damage: int) -> int:
+        if monster.invincible_cap <= 0:
+            return damage
+        remaining = max(0, monster.invincible_cap - monster.invincible_damage_taken)
+        effective = min(damage, remaining)
+        monster.invincible_damage_taken += effective
+        return effective
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _potion_targets_enemy(self, potion: Dict[str, Any]) -> bool:
+        return str(potion.get("id", potion.get("name", ""))) in {
+            "Fire Potion", "Explosive Potion", "Weak Potion", "FearPotion", "Poison Potion",
+        }
+
+    def _potion_amount(self, potion: Dict[str, Any], default: int) -> int:
+        try:
+            return int(potion.get("amount", default))
+        except (TypeError, ValueError):
+            return default
+
+    def _simulate_potion(
+        self,
+        player: SimPlayer,
+        monsters: List[SimMonster],
+        potion: Dict[str, Any],
+        target: Optional[SimMonster],
+    ) -> Tuple[SimPlayer, List[SimMonster], str]:
+        new_player = copy.deepcopy(player)
+        new_monsters = copy.deepcopy(monsters)
+        potion_id = str(potion.get("id", potion.get("name", "")))
+        amount = self._potion_amount(potion, 0)
+        if potion_id == "Block Potion":
+            new_player.block += amount or 12
+        elif potion_id == "Dexterity Potion":
+            new_player.dexterity += amount or 2
+        elif potion_id == "Strength Potion":
+            new_player.strength += amount or 2
+        elif potion_id == "Energy Potion":
+            new_player.energy += amount or 2
+        elif target is not None:
+            target_index = target.index
+            monster = new_monsters[target_index]
+            if potion_id == "Fire Potion":
+                damage = amount or 20
+                damage = self._effective_monster_damage(monster, damage)
+                monster.current_hp = max(0, monster.current_hp - max(0, damage - monster.block))
+                monster.block = max(0, monster.block - damage)
+            elif potion_id == "Explosive Potion":
+                damage = amount or 10
+                for monster in new_monsters:
+                    if monster.is_alive:
+                        damage = self._effective_monster_damage(monster, damage)
+                        monster.current_hp = max(0, monster.current_hp - max(0, damage - monster.block))
+                        monster.block = max(0, monster.block - damage)
+            elif potion_id == "Weak Potion":
+                if monster.artifact > 0:
+                    monster.artifact -= 1
+                else:
+                    monster.weak_turns += amount or 3
+            elif potion_id == "FearPotion":
+                if monster.artifact > 0:
+                    monster.artifact -= 1
+                else:
+                    monster.vulnerable_turns += amount or 3
+            elif potion_id == "Poison Potion":
+                if monster.artifact > 0:
+                    monster.artifact -= 1
+                else:
+                    monster.poison += amount or 6
+        return new_player, new_monsters, str(potion.get("name", potion_id))
 
     def _evoke_orb(
         self,
@@ -242,6 +385,7 @@ class CombatSolver:
                     target = monsters[target_idx]
                 else:
                     target = min(living, key=lambda m: m.current_hp)
+                dmg = self._effective_monster_damage(target, dmg)
                 unblocked = max(0, dmg - target.block)
                 target.block = max(0, target.block - dmg)
                 target.current_hp = max(0, target.current_hp - unblocked)
@@ -255,6 +399,7 @@ class CombatSolver:
             living = [m for m in monsters if m.is_alive]
             if living:
                 target = min(living, key=lambda m: m.current_hp)
+                dmg = self._effective_monster_damage(target, dmg)
                 unblocked = max(0, dmg - target.block)
                 target.block = max(0, target.block - dmg)
                 target.current_hp = max(0, target.current_hp - unblocked)
@@ -276,12 +421,34 @@ class CombatSolver:
         new_monsters = copy.deepcopy(monsters)
         effective_cost = 0 if (new_player.has_corruption and card.card_type == "SKILL") else card.cost
         new_player.energy -= effective_cost
+        new_player.cards_played_this_turn += 1
 
         step = PlayStep(
             card_index=orig_idx,
             card_info=card,
             target_monster_index=target_idx
         )
+
+        if card.card_type == "POWER":
+            for monster in new_monsters:
+                if self._is_awakened_one(monster):
+                    monster.awakened_one_bonus += 1
+                    step.notes += "🦅 觉醒者好奇：Boss力量+1 "
+
+        if new_player.time_eater_active and new_player.cards_played_this_turn == 12:
+            for monster in new_monsters:
+                if self._is_time_eater(monster):
+                    monster.time_eater_bonus += 2
+            step.notes += "⏳ 时光扭曲：第12张牌后强制结束回合，Boss力量+2 "
+
+        if new_player.beat_of_death > 0:
+            beat_damage = new_player.beat_of_death
+            blocked = min(new_player.block, beat_damage)
+            new_player.block -= blocked
+            direct_damage = beat_damage - blocked
+            new_player.current_hp = max(0, new_player.current_hp - direct_damage)
+            new_player.direct_damage_taken += direct_damage
+            step.notes += f"💔 死之律动{beat_damage}伤 "
 
         # 0. Exhaust handling & Feel No Pain synergy
         is_exhaust = card.exhausts or (new_player.has_corruption and card.card_type == "SKILL")
@@ -528,6 +695,7 @@ class CombatSolver:
                     if m.vulnerable_turns > 0:
                         final_dmg = math.floor(final_dmg * vuln_mult)
                     final_dmg *= hits
+                    final_dmg = self._effective_monster_damage(m, final_dmg)
                     unblocked = max(0, final_dmg - m.block)
                     m.block = max(0, m.block - final_dmg)
                     m.current_hp = max(0, m.current_hp - unblocked)
@@ -566,6 +734,7 @@ class CombatSolver:
                     if target.vulnerable_turns > 0:
                         final_dmg = math.floor(final_dmg * vuln_mult)
                     final_dmg *= hits
+                    final_dmg = self._effective_monster_damage(target, final_dmg)
                     unblocked = max(0, final_dmg - target.block)
                     target.block = max(0, target.block - final_dmg)
                     target.current_hp = max(0, target.current_hp - unblocked)
@@ -592,7 +761,8 @@ class CombatSolver:
         player: SimPlayer,
         monsters: List[SimMonster],
         steps: List[PlayStep],
-        initial_incoming: int
+        initial_incoming: int,
+        potion_uses: Optional[List[str]] = None,
     ) -> CombatPlan:
         """Evaluates end-of-turn outcome with Orbs passives, Poison ticks, Relics, and lethal cancellation."""
         monsters_copy = copy.deepcopy(monsters)
@@ -600,8 +770,14 @@ class CombatSolver:
 
         total_damage = sum(s.damage_dealt for s in steps)
         total_block = sum(s.block_gained for s in steps)
+        direct_damage_taken = player_copy.direct_damage_taken
 
         forecast_parts = []
+
+        if player_copy.time_eater_active and player_copy.cards_played_this_turn >= 12:
+            forecast_parts.append("[时光吞噬者: 12张牌后强制结束回合]")
+        if any(self._is_awakened_one(monster) and monster.awakened_one_bonus > 0 for monster in monsters_copy):
+            forecast_parts.append("[觉醒者好奇: 每张能力牌使Boss力量+1]")
 
         # 1. Defect Orbs End-of-turn Passives
         lightning_dmg = 0
@@ -659,7 +835,7 @@ class CombatSolver:
                 monsters_killed += 1
                 continue
             if m.is_attacking:
-                dmg = m.move_adjusted_damage
+                dmg = m.move_adjusted_damage + m.time_eater_bonus + m.awakened_one_bonus
                 # Monster weak reduction (40% with Paper Crane, else 25%)
                 if m.weak_turns > 0:
                     weak_factor = 0.6 if player_copy.has_paper_crane else 0.75
@@ -676,7 +852,7 @@ class CombatSolver:
 
                 projected_incoming += dmg * m.move_hits
 
-        hp_loss = max(0, projected_incoming - player_copy.block)
+        hp_loss = direct_damage_taken + max(0, projected_incoming - player_copy.block)
         excess_block = max(0, player_copy.block - projected_incoming)
 
         # Multi-objective fitness score
@@ -700,6 +876,7 @@ class CombatSolver:
             remaining_energy=player_copy.energy,
             final_stance=player_copy.stance,
             end_of_turn_forecast=" | ".join(forecast_parts),
+            potion_uses=list(potion_uses or []),
             score=score
         )
 
@@ -820,6 +997,7 @@ class CombatSolver:
             current_hp=max(0, _get_int(data.get("current_hp"), 10)),
             max_hp=max(1, _get_int(data.get("max_hp"), 10)),
             block=max(0, _get_int(data.get("block"), 0)),
+            invincible_cap=powers.get("Invincible", 0),
             intent=intent,
             move_adjusted_damage=max(0, _get_int(data.get("move_adjusted_damage", data.get("move_base_damage")), 0)),
             move_hits=max(1, _get_int(data.get("move_hits"), 1)),
@@ -831,6 +1009,7 @@ class CombatSolver:
             artifact=powers.get("Artifact", 0),
             curl_up=powers.get("Curl Up", 0),
             thorns=powers.get("Thorns", 0),
+            beat_of_death=powers.get("Beat of Death", 0),
             is_gone=bool(data.get("is_gone", False)),
             half_dead=bool(data.get("half_dead", False))
         )

@@ -164,6 +164,19 @@ def sanitize_game_state(raw_data: Any) -> Dict[str, Any]:
                         cleaned_pile.append(cleaned_c)
                 combat_state[pile_key] = cleaned_pile
 
+        raw_potions = combat_state.get("potions")
+        if isinstance(raw_potions, list):
+            combat_state["potions"] = [
+                {
+                    "id": _safe_str(p.get("id"), _safe_str(p.get("name"), "Potion")),
+                    "name": _safe_str(p.get("name"), _safe_str(p.get("id"), "Potion")),
+                    "amount": _safe_int(p.get("amount"), 0),
+                }
+                for p in raw_potions if isinstance(p, dict)
+            ]
+        else:
+            combat_state["potions"] = []
+
         combat_state["turn"] = max(1, _safe_int(combat_state.get("turn"), 1))
 
     return data

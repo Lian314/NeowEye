@@ -473,7 +473,7 @@ class TestE2EPipeline(unittest.TestCase):
         """
         combat_state = {
             "player": {
-                "current_hp": 80, "max_hp": 80, "block": 0, "energy": 1,
+                "current_hp": 80, "max_hp": 80, "block": 2, "energy": 1,
                 "powers": [{"id": "Feel No Pain", "amount": 1}, {"id": "Dark Embrace", "amount": 1}],
                 "relics": []
             },
@@ -518,6 +518,131 @@ class TestE2EPipeline(unittest.TestCase):
         # Impervious (30) + Shrug It Off (8) = 38 block
         self.assertGreaterEqual(plan.projected_block, 38)
         self.assertEqual(plan.projected_hp_loss, 0)
+
+    def test_block_potion_prevents_damage(self):
+        """A Block Potion should be considered when cards alone cannot block the attack."""
+        combat_state = {
+            "player": {"current_hp": 50, "max_hp": 50, "block": 0, "energy": 0, "powers": []},
+            "monsters": [{
+                "name": "Jaw Worm", "current_hp": 40, "max_hp": 40, "block": 0,
+                "intent": "ATTACK", "move_adjusted_damage": 10, "move_hits": 1,
+                "powers": []
+            }],
+            "hand": [],
+            "potions": [{"id": "Block Potion", "name": "格挡药水", "amount": 12}],
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertEqual(plan.projected_hp_loss, 0)
+        self.assertEqual(plan.projected_block, 12)
+        self.assertEqual(plan.potion_uses, ["格挡药水"])
+
+    def test_fire_potion_lethal_cancels_attack(self):
+        """A Fire Potion should be able to kill an attacking enemy without energy."""
+        combat_state = {
+            "player": {"current_hp": 50, "max_hp": 50, "block": 0, "energy": 0, "powers": []},
+            "monsters": [{
+                "name": "Cultist", "current_hp": 20, "max_hp": 20, "block": 0,
+                "intent": "ATTACK", "move_adjusted_damage": 15, "move_hits": 1,
+                "powers": []
+            }],
+            "hand": [],
+            "potions": [{"id": "Fire Potion", "name": "火焰药水", "amount": 20}],
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertEqual(plan.monsters_killed, 1)
+        self.assertEqual(plan.projected_hp_loss, 0)
+        self.assertEqual(plan.potion_uses, ["火焰药水"])
+
+    def test_time_eater_stops_at_twelfth_card(self):
+        """Time Eater must end the turn after the twelfth played card."""
+        self.solver.config.max_search_depth = 20
+        combat_state = {
+            "player": {
+                "current_hp": 80, "max_hp": 80, "block": 2, "energy": 1,
+                "powers": [], "cards_played_this_turn": 0
+            },
+            "monsters": [{
+                "id": "Time Eater", "name": "Time Eater", "current_hp": 999,
+                "max_hp": 999, "block": 0, "intent": "ATTACK",
+                "move_adjusted_damage": 0, "move_hits": 1, "powers": []
+            }],
+            "hand": [
+                {"id": "Anger", "name": "Anger", "cost": 0, "type": "ATTACK"}
+                for _ in range(13)
+            ]
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertEqual(len(plan.steps), 12)
+        self.assertIn("时光扭曲", plan.steps[-1].notes)
+        self.assertIn("时光吞噬者", plan.end_of_turn_forecast)
+
+    def test_awakened_one_curiosity_increases_damage(self):
+        """Playing a Power against Awakened One grants it one Strength."""
+        monster = SimMonster(
+            index=0, id="Awakened One", name="Awakened One", current_hp=100,
+            max_hp=100, block=0, intent="ATTACK", move_adjusted_damage=10,
+            is_attacking=True
+        )
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=3)
+        power = resolve_card_info({"id": "Demon Form", "name": "Demon Form", "cost": 3, "type": "POWER"})
+
+        next_player, next_monsters, step, drawn, draw, discard = self.solver._simulate_play_card(
+            player, [monster], 0, power, None
+        )
+        plan = self.solver._evaluate_state(next_player, next_monsters, [step], 10)
+        self.assertEqual(next_monsters[0].awakened_one_bonus, 1)
+        self.assertEqual(plan.projected_incoming_damage, 11)
+        self.assertIn("觉醒者好奇", plan.end_of_turn_forecast)
+
+    def test_awakened_one_curiosity_influences_dfs_choice(self):
+        """The solver should prefer mitigation over an unnecessary Power card."""
+        combat_state = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 3, "powers": []},
+            "monsters": [{
+                "id": "Awakened One", "name": "Awakened One", "current_hp": 100,
+                "max_hp": 100, "block": 0, "intent": "ATTACK",
+                "move_adjusted_damage": 10, "move_hits": 1, "powers": []
+            }],
+            "hand": [
+                {"id": "Demon Form", "name": "Demon Form", "cost": 3, "type": "POWER"},
+                {"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"}
+            ]
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertEqual(plan.projected_hp_loss, 5)
+        self.assertEqual([step.card_info.name for step in plan.steps], ["Defend"])
+
+    def test_corrupt_heart_beat_of_death_counts_card_damage(self):
+        """Beat of Death must damage the player for each played card."""
+        combat_state = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 1, "powers": []},
+            "monsters": [{
+                "id": "Corrupt Heart", "name": "Corrupt Heart", "current_hp": 6,
+                "max_hp": 750, "block": 0, "intent": "ATTACK",
+                "move_adjusted_damage": 10, "move_hits": 1, "powers": []
+            }],
+            "hand": [{"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"}]
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertEqual([step.card_info.name for step in plan.steps], ["Strike"])
+        self.assertEqual(plan.projected_hp_loss, 1)
+        self.assertIn("死之律动", plan.steps[0].notes)
+
+    def test_corrupt_heart_invincible_caps_damage(self):
+        """Invincible must cap effective damage dealt during the turn."""
+        heart = SimMonster(
+            index=0, id="Corrupt Heart", name="Corrupt Heart", current_hp=100,
+            max_hp=750, block=0, intent="ATTACK", move_adjusted_damage=0,
+            is_attacking=True, invincible_cap=5
+        )
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=3)
+        strike = resolve_card_info({"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"})
+
+        next_player, next_monsters, step, drawn, draw, discard = self.solver._simulate_play_card(
+            player, [heart], 0, strike, 0
+        )
+        self.assertEqual(next_monsters[0].current_hp, 95)
+        self.assertEqual(step.damage_dealt, 5)
 
     def test_enemy_artifact_negates_vulnerable(self):
         """
