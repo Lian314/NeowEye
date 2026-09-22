@@ -61,7 +61,7 @@ class SpireTacticalAssistant:
         self.comm_bridge.start()
 
         # If starting in mock mode, load the first scenario by default
-        if self.mode == "mock" or not sys.stdin.isatty():
+        if self.mode == "mock":
             first_scenario_name = list(MOCK_SCENARIOS.keys())[0]
             self.on_mock_scenario_selected(first_scenario_name)
 
@@ -162,12 +162,18 @@ class SpireTacticalAssistant:
 
         # 1. Combat State -> In-combat Mathematical Optimizer & Deck Tracker
         if combat_state and (screen_type == "NONE" or screen_type == "COMBAT"):
-            plan = self.combat_solver.solve(combat_state, relics=relics)
-            self.hud.root.after(0, lambda: self.hud.show_combat_plan(plan))
+            self._latest_combat_id = getattr(self, "_latest_combat_id", 0) + 1
+            combat_id = self._latest_combat_id
 
-            # Deck draw probabilities
-            deck_stats = self.deck_tracker.analyze_deck(combat_state)
-            self.hud.root.after(0, lambda: self.hud.show_deck_tab(deck_stats))
+            def _async_combat_solve():
+                plan = self.combat_solver.solve(combat_state, relics=relics)
+                deck_stats = self.deck_tracker.analyze_deck(combat_state)
+                # Ensure only the latest state updates HUD
+                if combat_id == getattr(self, "_latest_combat_id", 0):
+                    self.hud.root.after(0, lambda: self.hud.show_combat_plan(plan))
+                    self.hud.root.after(0, lambda: self.hud.show_deck_tab(deck_stats))
+
+            threading.Thread(target=_async_combat_solve, daemon=True, name=f"CombatSolve-{combat_id}").start()
 
         # 2. Card Reward Screen -> Laya Decision Engine
         elif screen_type == "CARD_REWARD":

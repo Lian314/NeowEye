@@ -488,14 +488,12 @@ class CombatSolver:
         if frost_blk > 0:
             forecast_parts.append(f"[冰霜被动: {frost_blk}甲]")
 
-        # 2. Silent Poison End-of-turn Damage Tick
+        # 2. Silent Poison End-of-turn Damage Tick (Ignores block completely)
         total_poison_dmg = 0
         for m in monsters_copy:
             if m.is_alive and m.poison > 0:
                 p_dmg = m.poison
-                unblocked = max(0, p_dmg - m.block)
-                m.block = max(0, m.block - p_dmg)
-                m.current_hp = max(0, m.current_hp - unblocked)
+                m.current_hp = max(0, m.current_hp - p_dmg)
                 total_poison_dmg += p_dmg
                 m.poison = max(0, m.poison - 1)
 
