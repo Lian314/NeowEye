@@ -136,6 +136,78 @@ class SpireTacticalAssistant:
             data = MOCK_SCENARIOS[scenario_name]
             self.comm_bridge.inject_state(data)
 
+def install_config():
+    """
+    Automatically configures CommunicationMod's config.properties to point to this executable.
+    Creates %LOCALAPPDATA%/ModTheSpire/CommunicationMod/config.properties if it doesn't exist.
+    """
+    import os
+    if getattr(sys, 'frozen', False):
+        exe_path = os.path.abspath(sys.executable)
+    else:
+        exe_path = os.path.abspath(sys.argv[0])
+
+    safe_exe_path = exe_path.replace("\\", "/")
+    command_line = f'"{safe_exe_path}" --mode stdin'
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        local_app_data = os.path.expanduser("~\\AppData\\Local")
+
+    target_dir = os.path.join(local_app_data, "ModTheSpire", "CommunicationMod")
+    os.makedirs(target_dir, exist_ok=True)
+    target_file = os.path.join(target_dir, "config.properties")
+
+    # Read existing config if any
+    existing_lines = []
+    if os.path.exists(target_file):
+        try:
+            with open(target_file, "r", encoding="utf-8") as f:
+                existing_lines = f.readlines()
+        except Exception:
+            pass
+
+    has_command = False
+    has_run_at_start = False
+    has_verbose = False
+    new_lines = []
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if stripped.startswith("command="):
+            new_lines.append(f"command={command_line}\n")
+            has_command = True
+        elif stripped.startswith("runAtGameStart="):
+            new_lines.append("runAtGameStart=true\n")
+            has_run_at_start = True
+        elif stripped.startswith("verbose="):
+            new_lines.append(line)
+            has_verbose = True
+        else:
+            new_lines.append(line)
+
+    if not has_command:
+        new_lines.append(f"command={command_line}\n")
+    if not has_run_at_start:
+        new_lines.append("runAtGameStart=true\n")
+    if not has_verbose:
+        new_lines.append("verbose=false\n")
+
+    with open(target_file, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    console_msg = (
+        f"[OK] NeowEye 战术辅助器配置成功！\n"
+        f"配置文件路径: {target_file}\n"
+        f"绑定程序路径: {command_line}\n"
+        f"【使用说明】:\n"
+        f"1. 确保杀戮尖塔已安装/订阅 CommunicationMod 与 ModTheSpire\n"
+        f"2. 从 Steam 启动游戏时选择 [Play with Mods]\n"
+        f"3. 勾选 CommunicationMod 启动，NeowEye 战术悬浮窗将全自动呼出！"
+    )
+    print(console_msg)
+    return target_file
+
 def main():
     parser = argparse.ArgumentParser(description="Slay the Spire Real-time Tactical Assistant")
     parser.add_argument(
@@ -144,10 +216,20 @@ def main():
         default="stdin",
         help="Bridge mode: stdin (CommunicationMod child process), socket, or mock"
     )
+    parser.add_argument(
+        "--install-config",
+        action="store_true",
+        help="Automatically configure CommunicationMod config.properties to point to this executable"
+    )
     args = parser.parse_args()
+
+    if args.install_config:
+        install_config()
+        return
 
     app = SpireTacticalAssistant(mode=args.mode)
     app.start()
 
 if __name__ == "__main__":
     main()
+
