@@ -52,15 +52,36 @@ def sanitize_game_state(raw_data: Any) -> Dict[str, Any]:
     game_state["current_hp"] = _safe_int(game_state.get("current_hp"), 80)
     game_state["max_hp"] = max(1, _safe_int(game_state.get("max_hp"), 80))
     game_state["gold"] = max(0, _safe_int(game_state.get("gold"), 99))
-    if not isinstance(game_state.get("deck"), list):
+    # Top-level deck & relics normalization
+    if isinstance(game_state.get("deck"), list):
+        game_state["deck"] = [
+            {"id": _safe_str(c.get("id"), "Card"), "name": _safe_str(c.get("name"), "Card")}
+            for c in game_state["deck"] if isinstance(c, dict)
+        ]
+    else:
         game_state["deck"] = []
-    if not isinstance(game_state.get("relics"), list):
+
+    if isinstance(game_state.get("relics"), list):
+        game_state["relics"] = [
+            {
+                "id": _safe_str(r.get("id"), "Relic"),
+                "name": _safe_str(r.get("name"), "Relic"),
+                "counter": _safe_int(r.get("counter"), -1)
+            }
+            for r in game_state["relics"] if isinstance(r, dict)
+        ]
+    else:
         game_state["relics"] = []
+
     if not isinstance(game_state.get("screen_state"), dict):
         game_state["screen_state"] = {}
 
-    # Combat state normalization
+    # Combat state normalization (ensure non-dict values become None)
     combat_state = game_state.get("combat_state")
+    if combat_state is not None and not isinstance(combat_state, dict):
+        combat_state = None
+        game_state["combat_state"] = None
+
     if isinstance(combat_state, dict):
         # Sanitize player
         player = combat_state.get("player")
@@ -71,9 +92,27 @@ def sanitize_game_state(raw_data: Any) -> Dict[str, Any]:
         player["max_hp"] = max(1, _safe_int(player.get("max_hp"), game_state["max_hp"]))
         player["block"] = max(0, _safe_int(player.get("block"), 0))
         player["energy"] = max(0, _safe_int(player.get("energy"), 3))
-        if not isinstance(player.get("powers"), list):
+
+        raw_powers = player.get("powers")
+        if isinstance(raw_powers, list):
+            player["powers"] = [
+                {"id": _safe_str(p.get("id"), ""), "amount": _safe_int(p.get("amount"), 0)}
+                for p in raw_powers if isinstance(p, dict)
+            ]
+        else:
             player["powers"] = []
-        if not isinstance(player.get("orbs"), list):
+
+        raw_orbs = player.get("orbs")
+        if isinstance(raw_orbs, list):
+            player["orbs"] = [
+                {
+                    "name": _safe_str(o.get("name") or o.get("id"), ""),
+                    "evoke_amount": _safe_int(o.get("evoke_amount"), 0),
+                    "passive_amount": _safe_int(o.get("passive_amount"), 0)
+                }
+                for o in raw_orbs if isinstance(o, dict)
+            ]
+        else:
             player["orbs"] = []
 
         # Sanitize monsters
@@ -84,6 +123,12 @@ def sanitize_game_state(raw_data: Any) -> Dict[str, Any]:
         valid_monsters = []
         for m in monsters:
             if isinstance(m, dict):
+                raw_mpowers = m.get("powers")
+                cleaned_mpowers = [
+                    {"id": _safe_str(p.get("id"), ""), "amount": _safe_int(p.get("amount"), 0)}
+                    for p in raw_mpowers if isinstance(p, dict)
+                ] if isinstance(raw_mpowers, list) else []
+
                 m["current_hp"] = max(0, _safe_int(m.get("current_hp"), 0))
                 m["max_hp"] = max(1, _safe_int(m.get("max_hp"), 1))
                 m["block"] = max(0, _safe_int(m.get("block"), 0))
@@ -92,18 +137,32 @@ def sanitize_game_state(raw_data: Any) -> Dict[str, Any]:
                 m["move_hits"] = max(1, _safe_int(m.get("move_hits"), 1))
                 m["is_gone"] = bool(m.get("is_gone", False))
                 m["half_dead"] = bool(m.get("half_dead", False))
-                if not isinstance(m.get("powers"), list):
-                    m["powers"] = []
+                m["powers"] = cleaned_mpowers
                 valid_monsters.append(m)
         combat_state["monsters"] = valid_monsters
 
-        # Sanitize hand, piles
+        # Sanitize hand, piles with deep card attribute coercion
         for pile_key in ["hand", "draw_pile", "discard_pile", "exhaust_pile"]:
             pile = combat_state.get(pile_key)
             if not isinstance(pile, list):
                 combat_state[pile_key] = []
             else:
-                combat_state[pile_key] = [c for c in pile if isinstance(c, dict)]
+                cleaned_pile = []
+                for c in pile:
+                    if isinstance(c, dict):
+                        cleaned_c = {
+                            "id": _safe_str(c.get("id"), "Card"),
+                            "name": _safe_str(c.get("name"), _safe_str(c.get("id"), "Card")),
+                            "cost": _safe_int(c.get("cost"), 1),
+                            "type": _safe_str(c.get("type"), "ATTACK"),
+                            "is_playable": bool(c.get("is_playable", True)),
+                            "upgraded": bool(c.get("upgraded", False))
+                        }
+                        for k, v in c.items():
+                            if k not in cleaned_c:
+                                cleaned_c[k] = v
+                        cleaned_pile.append(cleaned_c)
+                combat_state[pile_key] = cleaned_pile
 
         combat_state["turn"] = max(1, _safe_int(combat_state.get("turn"), 1))
 
@@ -115,6 +174,7 @@ class CommBridge:
         self.listeners: List[Callable[[Dict[str, Any]], None]] = []
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._server_sock: Optional[socket.socket] = None
         self.latest_game_state: Optional[Dict[str, Any]] = None
         self.latest_raw_msg: Optional[Dict[str, Any]] = None
 
@@ -139,6 +199,11 @@ class CommBridge:
     def stop(self):
         """Stops the communication bridge."""
         self._running = False
+        if getattr(self, "_server_sock", None):
+            try:
+                self._server_sock.close()
+            except Exception:
+                pass
 
     def send_command(self, cmd: str):
         """Sends a command to CommunicationMod via stdout."""
@@ -194,16 +259,30 @@ class CommBridge:
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind((host, port))
         server_sock.listen(1)
+        server_sock.settimeout(1.0)
+        self._server_sock = server_sock
         logger.info(f"CommBridge listening on socket {host}:{port}...")
 
         while self._running:
             try:
-                conn, addr = server_sock.accept()
+                try:
+                    conn, addr = server_sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
                 logger.info(f"Connected to CommMod socket from {addr}")
                 buffer = ""
                 with conn:
+                    conn.settimeout(1.0)
                     while self._running:
-                        data = conn.recv(4096)
+                        try:
+                            data = conn.recv(4096)
+                        except socket.timeout:
+                            continue
+                        except OSError:
+                            break
                         if not data:
                             break
                         buffer += data.decode("utf-8", errors="ignore")
@@ -219,4 +298,7 @@ class CommBridge:
             except Exception as e:
                 if self._running:
                     logger.error(f"Socket server error: {e}")
-        server_sock.close()
+        try:
+            server_sock.close()
+        except Exception:
+            pass

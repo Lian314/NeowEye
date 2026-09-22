@@ -336,5 +336,99 @@ class TestE2EPipeline(unittest.TestCase):
 
                 mock_select.assert_not_called()
 
+    def test_combat_state_non_dict_normalization(self):
+        """
+        Validates that if combat_state is not a dict (e.g. ['bad'] or 'bad_str'),
+        sanitize_game_state sets it to None and main.on_game_state_received handles it
+        without raising AttributeError.
+        """
+        from main import SpireTacticalAssistant
+        import unittest.mock as mock
+
+        malformed_raw = {
+            "game_state": {
+                "combat_state": ["bad_list_instead_of_dict"]
+            }
+        }
+        sanitized = sanitize_game_state(malformed_raw)
+        self.assertIsNone(sanitized["game_state"]["combat_state"])
+
+        with mock.patch("main.EnvironmentDetector.auto_bind_communication_mod", return_value=(True, "")):
+            with mock.patch("main.OverlayHUD") as mock_hud_cls:
+                mock_hud = mock.MagicMock()
+                mock_hud_cls.return_value = mock_hud
+                assistant = SpireTacticalAssistant(mode="stdin")
+                # Ensure no AttributeError is raised
+                assistant.on_game_state_received(malformed_raw)
+
+    def test_deep_field_type_coercion(self):
+        """
+        Validates that powers, orbs, relics, deck, and cards with malformed inner fields
+        are coerced and filtered to safe, valid types.
+        """
+        raw = {
+            "game_state": {
+                "deck": [{"id": 123, "name": 456}, "invalid_card_string"],
+                "relics": [{"id": "Pen Nib", "counter": "9"}, None],
+                "combat_state": {
+                    "player": {
+                        "powers": [{"id": "Strength", "amount": "5"}, "invalid_power"],
+                        "orbs": [{"name": "Lightning", "evoke_amount": "8"}, 123]
+                    },
+                    "monsters": [
+                        {
+                            "name": "Cultist",
+                            "powers": [{"id": "Ritual", "amount": "3"}]
+                        }
+                    ],
+                    "hand": [
+                        {"id": "Strike_R", "cost": "1", "type": "ATTACK"}
+                    ]
+                }
+            }
+        }
+
+        sanitized = sanitize_game_state(raw)
+        gs = sanitized["game_state"]
+        cs = gs["combat_state"]
+
+        self.assertEqual(len(gs["deck"]), 1)
+        self.assertEqual(gs["deck"][0]["id"], "123")
+        self.assertEqual(len(gs["relics"]), 1)
+        self.assertEqual(gs["relics"][0]["counter"], 9)
+
+        player = cs["player"]
+        self.assertEqual(len(player["powers"]), 1)
+        self.assertEqual(player["powers"][0]["amount"], 5)
+        self.assertEqual(len(player["orbs"]), 1)
+        self.assertEqual(player["orbs"][0]["evoke_amount"], 8)
+
+        monster = cs["monsters"][0]
+        self.assertEqual(len(monster["powers"]), 1)
+        self.assertEqual(monster["powers"][0]["amount"], 3)
+
+        card = cs["hand"][0]
+        self.assertEqual(card["cost"], 1)
+
+    def test_socket_graceful_shutdown(self):
+        """
+        Ensures that CommBridge in socket mode unblocks and terminates cleanly
+        when stop() is called, without hanging indefinitely on accept().
+        """
+        from comm_bridge import CommBridge
+        from types import SimpleNamespace
+        import time
+
+        cfg = SimpleNamespace(mode="socket", socket_host="127.0.0.1", socket_port=29519, send_ready_on_start=False)
+        bridge = CommBridge(config=cfg)
+        bridge.start()
+        time.sleep(0.1)
+        self.assertTrue(bridge._running)
+
+        bridge.stop()
+        if bridge._thread:
+            bridge._thread.join(timeout=2.0)
+            self.assertFalse(bridge._thread.is_alive())
+
 if __name__ == "__main__":
     unittest.main()

@@ -133,6 +133,8 @@ class SpireTacticalAssistant:
 
         screen_type = game_state.get("screen_type", "NONE")
         combat_state = game_state.get("combat_state")
+        if not isinstance(combat_state, dict):
+            combat_state = None
 
         # Extract player summary
         char = game_state.get("class", "IRONCLAD")
@@ -177,27 +179,39 @@ class SpireTacticalAssistant:
 
         # 2. Card Reward Screen -> Laya Decision Engine
         elif screen_type == "CARD_REWARD":
+            self._latest_macro_id = getattr(self, "_latest_macro_id", 0) + 1
+            macro_id = self._latest_macro_id
+
             def _async_card_eval():
                 decision = self.macro_advisor.evaluate_card_reward(game_state)
-                self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
+                if macro_id == getattr(self, "_latest_macro_id", 0):
+                    self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
 
-            threading.Thread(target=_async_card_eval, daemon=True).start()
+            threading.Thread(target=_async_card_eval, daemon=True, name=f"CardReward-{macro_id}").start()
 
         # 3. Map Routing Screen -> Laya Decision Engine
         elif screen_type == "MAP":
+            self._latest_macro_id = getattr(self, "_latest_macro_id", 0) + 1
+            macro_id = self._latest_macro_id
+
             def _async_map_eval():
                 decision = self.macro_advisor.evaluate_map_routing(game_state)
-                self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
+                if macro_id == getattr(self, "_latest_macro_id", 0):
+                    self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
 
-            threading.Thread(target=_async_map_eval, daemon=True).start()
+            threading.Thread(target=_async_map_eval, daemon=True, name=f"MapRouting-{macro_id}").start()
 
         # 4. Rest Site Screen -> Laya Decision Engine
         elif screen_type == "REST":
+            self._latest_macro_id = getattr(self, "_latest_macro_id", 0) + 1
+            macro_id = self._latest_macro_id
+
             def _async_rest_eval():
                 decision = self.macro_advisor.evaluate_rest_site(game_state)
-                self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
+                if macro_id == getattr(self, "_latest_macro_id", 0):
+                    self.hud.root.after(0, lambda: self.hud.show_macro_decision(decision))
 
-            threading.Thread(target=_async_rest_eval, daemon=True).start()
+            threading.Thread(target=_async_rest_eval, daemon=True, name=f"RestSite-{macro_id}").start()
 
     def on_mock_scenario_selected(self, scenario_name: str):
         """Injects a mock scenario into the assistant pipeline."""
