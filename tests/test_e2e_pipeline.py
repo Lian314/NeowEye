@@ -718,5 +718,168 @@ class TestE2EPipeline(unittest.TestCase):
         sneaky = resolve_card_info({"id": "Underhanded Strike"})
         self.assertEqual(sneaky.base_damage, 12)
 
+    def test_mechanic_vulnerable_and_weak_status_timing(self):
+        """
+        验证易伤 (vulnerable) 与虚弱 (weak) 机制的数值计算与时序断言：
+        1. 打出 Bash 赋予 2 回合易伤 (vulnerable)，敌方 vulnerable_turns == 2，输出 notes 含 '易伤'；
+        2. 易伤状态下后续攻击享受 1.5 倍伤害；
+        3. 打出 Clothesline 赋予 2 回合虚弱 (weak)，敌方 weak_turns == 2，输出 notes 含 '虚弱'；
+        4. 敌方虚弱状态下攻击意图伤害降低 25%。
+        """
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=4)
+        monster = SimMonster(
+            index=0, id="Cultist", name="Cultist", current_hp=50, max_hp=50, block=0,
+            intent="ATTACK", move_adjusted_damage=12, is_attacking=True
+        )
+        bash = resolve_card_info({"id": "Bash", "name": "Bash", "cost": 2, "type": "ATTACK"})
+        clothesline = resolve_card_info({"id": "Clothesline", "name": "Clothesline", "cost": 2, "type": "ATTACK"})
+
+        # 1. 验证 Bash 施加易伤 (vulnerable)
+        p1, m1, s1, d1, dp1, dcp1 = self.solver._simulate_play_card(player, [monster], 0, bash, 0)
+        self.assertEqual(m1[0].vulnerable_turns, 2)
+        self.assertIn("易伤", s1.notes)
+        self.assertEqual(s1.damage_dealt, 8)
+
+        # 2. 验证 Clothesline 在易伤下造成 12 * 1.5 = 18 点伤害，并施加虚弱 (weak)
+        p2, m2, s2, d2, dp2, dcp2 = self.solver._simulate_play_card(p1, m1, 1, clothesline, 0)
+        self.assertEqual(s2.damage_dealt, 18)
+        self.assertEqual(m2[0].weak_turns, 2)
+        self.assertIn("虚弱", s2.notes)
+
+        # 3. 验证虚弱对敌方攻击的削弱 (12 * 0.75 = 9)
+        plan = self.solver._evaluate_state(p2, m2, [s1, s2], 12)
+        self.assertEqual(plan.projected_incoming_damage, 9)
+
+    def test_mechanic_strength_and_dexterity_scaling(self):
+        """
+        验证力量 (strength) 与敏捷 (dexterity) 状态增长与数值增幅：
+        1. 打出 Inflame 获得力量 (strength)，player.strength == 2，notes 含 '力量'；
+        2. 打出 Strike 伤害由 6 提升至 6 + 2 = 8；
+        3. 打出 Footwork 获得敏捷 (dexterity)，player.dexterity == 2，notes 含 '敏捷'；
+        4. 打出 Defend 格挡由 5 提升至 5 + 2 = 7。
+        """
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=4)
+        monster = SimMonster(
+            index=0, id="Louse", name="Louse", current_hp=30, max_hp=30, block=0,
+            intent="ATTACK", move_adjusted_damage=5, is_attacking=True
+        )
+        inflame = resolve_card_info({"id": "Inflame", "name": "Inflame", "cost": 1, "type": "POWER"})
+        footwork = resolve_card_info({"id": "Footwork", "name": "Footwork", "cost": 1, "type": "POWER"})
+        strike = resolve_card_info({"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"})
+        defend = resolve_card_info({"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"})
+
+        # 力量 (strength)
+        p1, m1, s1, _, _, _ = self.solver._simulate_play_card(player, [monster], 0, inflame, None)
+        self.assertEqual(p1.strength, 2)
+        self.assertIn("力量", s1.notes)
+
+        p2, m2, s2, _, _, _ = self.solver._simulate_play_card(p1, m1, 1, strike, 0)
+        self.assertEqual(s2.damage_dealt, 8)  # 6 + 2 力量
+
+        # 敏捷 (dexterity)
+        p3, m3, s3, _, _, _ = self.solver._simulate_play_card(p2, m2, 2, footwork, None)
+        self.assertEqual(p3.dexterity, 2)
+        self.assertIn("敏捷", s3.notes)
+
+        p4, m4, s4, _, _, _ = self.solver._simulate_play_card(p3, m3, 3, defend, None)
+        self.assertEqual(s4.block_gained, 7)  # 5 + 2 敏捷
+
+    def test_mechanic_energy_gain_and_cards_drawing(self):
+        """
+        验证能量增益 (energy) 与动态抽牌 (draw) 协同：
+        1. 初始能量 1，打出 Bloodletting 回复 2 点能量 (energy)，剩余能量为 1 - 0 + 2 = 3，notes 含 '能量'；
+        2. 打出 Pommel Strike 抽牌 (draw)，从 draw_pile 中抽出一张牌放入手牌，notes 含 '抽'。
+        """
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=1)
+        monster = SimMonster(
+            index=0, id="Jaw Worm", name="Jaw Worm", current_hp=40, max_hp=40, block=0,
+            intent="ATTACK", move_adjusted_damage=8, is_attacking=True
+        )
+        bloodletting = resolve_card_info({"id": "Bloodletting", "name": "Bloodletting", "cost": 0, "type": "SKILL"})
+        pommel = resolve_card_info({"id": "Pommel Strike", "name": "Pommel Strike", "cost": 1, "type": "ATTACK"})
+        strike = resolve_card_info({"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"})
+
+        # 回能 (energy)
+        p1, m1, s1, _, _, _ = self.solver._simulate_play_card(player, [monster], 0, bloodletting, None)
+        self.assertEqual(p1.energy, 3)
+        self.assertIn("能量", s1.notes)
+
+        # 抽牌 (draw)
+        p2, m2, s2, drawn, next_dp, _ = self.solver._simulate_play_card(p1, m1, 1, pommel, 0, draw_pile=[strike])
+        self.assertEqual(len(drawn), 1)
+        self.assertEqual(drawn[0][1].name, "Strike")
+        self.assertIn("抽", s2.notes)
+
+    def test_mechanic_defect_orbs_channel_evoke_and_focus(self):
+        """
+        验证故障机器人充能球生成 (channel_orb / channel_count)、激发 (evoke_orbs) 与集中 (focus)：
+        1. 打出 Defragment 获得 1 点集中 (focus)，player.focus == 1，notes 含 '集中'；
+        2. 打出 Ball Lightning 生成 1 个闪电充能球 (channel_orb, channel_count)，player.orbs 包含 'Lightning'，notes 含 '球'；
+        3. 打出 Dualcast 双重激发 (evoke) 最前方的球，闪电球每次激发造成 8 + 1 (集中) = 9 点伤害，共 18 点伤害，notes 含 '激发'。
+        """
+        player = SimPlayer(current_hp=75, max_hp=75, block=0, energy=4)
+        monster = SimMonster(
+            index=0, id="Cultist", name="Cultist", current_hp=40, max_hp=40, block=0,
+            intent="ATTACK", move_adjusted_damage=6, is_attacking=True
+        )
+        defrag = resolve_card_info({"id": "Defragment", "name": "Defragment", "cost": 1, "type": "POWER"})
+        ball_lightning = resolve_card_info({"id": "Ball Lightning", "name": "Ball Lightning", "cost": 1, "type": "ATTACK"})
+        dualcast = resolve_card_info({"id": "Dualcast", "name": "Dualcast", "cost": 1, "type": "SKILL"})
+
+        # 集中 (focus)
+        p1, m1, s1, _, _, _ = self.solver._simulate_play_card(player, [monster], 0, defrag, None)
+        self.assertEqual(p1.focus, 1)
+        self.assertIn("集中", s1.notes)
+
+        # 生成充能球 (channel_orb, channel_count)
+        p2, m2, s2, _, _, _ = self.solver._simulate_play_card(p1, m1, 1, ball_lightning, 0)
+        self.assertEqual(p2.orbs, ["Lightning"])
+        self.assertIn("球", s2.notes)
+
+        # 激发 (evoke_orbs)
+        p3, m3, s3, _, _, _ = self.solver._simulate_play_card(p2, m2, 2, dualcast, 0)
+        self.assertEqual(len(p3.orbs), 0)
+        self.assertEqual(s3.damage_dealt, 18)  # 2 * (8 + 1 集中)
+        self.assertIn("激发", s3.notes)
+
+    def test_mechanic_card_exhaust_and_stance_transitions(self):
+        """
+        验证卡牌消耗 (exhausts) 与观者姿态切换 (stance)：
+        1. 打出 Seeing Red，具有消耗 (exhaust) 属性，s1.notes 包含 '消耗'；
+        2. 打出 Crescendo 进入【愤怒】姿态 (stance)，伤害与承伤翻倍，notes 包含 '姿态'；
+        3. 打出 Tranquility 进入【平静】姿态 (stance)；
+        4. 退出平静姿态返还 +2 能量。
+        """
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=3)
+        monster = SimMonster(
+            index=0, id="Jaw Worm", name="Jaw Worm", current_hp=40, max_hp=40, block=0,
+            intent="ATTACK", move_adjusted_damage=6, is_attacking=True
+        )
+        seeing_red = resolve_card_info({"id": "Seeing Red", "name": "Seeing Red", "cost": 1, "type": "SKILL"})
+        crescendo = resolve_card_info({"id": "Crescendo", "name": "Crescendo", "cost": 1, "type": "SKILL"})
+        vigilance = resolve_card_info({"id": "Vigilance", "name": "Vigilance", "cost": 2, "type": "SKILL"})
+        empty_body = resolve_card_info({"id": "Empty Body", "name": "Empty Body", "cost": 1, "type": "SKILL"})
+
+        # 消耗 (exhausts)
+        p1, m1, s1, _, _, _ = self.solver._simulate_play_card(player, [monster], 0, seeing_red, None)
+        self.assertTrue(seeing_red.exhausts)
+        self.assertIn("消耗", s1.notes)
+
+        # 姿态 (stance) - 愤怒
+        p2, m2, s2, _, _, _ = self.solver._simulate_play_card(p1, m1, 1, crescendo, None)
+        self.assertEqual(p2.stance, "Wrath")
+        self.assertIn("姿态", s2.notes)
+
+        # 姿态 (stance) - 平静
+        p3, m3, s3, _, _, _ = self.solver._simulate_play_card(p2, m2, 2, vigilance, None)
+        self.assertEqual(p3.stance, "Calm")
+        self.assertIn("姿态", s3.notes)
+
+        # 姿态 (stance) - 退出平静返还 +2 能量
+        p4, m4, s4, _, _, _ = self.solver._simulate_play_card(p3, m3, 3, empty_body, None)
+        self.assertEqual(p4.stance, "None")
+        self.assertEqual(p4.energy, p3.energy - 1 + 2)
+        self.assertIn("姿态", s4.notes)
+
 if __name__ == "__main__":
     unittest.main()

@@ -493,19 +493,19 @@ class CombatSolver:
                 step.notes += "退出平静+2⚡ "
             new_player.stance = card.stance
             if card.stance == "Wrath":
-                step.notes += "进入【愤怒】 "
+                step.notes += "进入【愤怒】姿态 "
             elif card.stance == "Calm":
-                step.notes += "进入【平静】 "
+                step.notes += "进入【平静】姿态 "
             elif card.stance == "Divinity":
                 new_player.energy += 3
-                step.notes += "进入【神化】+3⚡ "
+                step.notes += "进入【神化】姿态+3⚡ "
             elif card.stance == "None" and old_stance != "None":
                 step.notes += "退出姿态 "
 
         # 2. Energy Gain & Focus
         if card.energy_gain > 0:
             new_player.energy += card.energy_gain
-            step.notes += f"+{card.energy_gain}⚡ "
+            step.notes += f"+{card.energy_gain}能量(⚡) "
         if card.focus_applied != 0:
             new_player.focus += card.focus_applied
             step.notes += f"+{card.focus_applied}集中 "
@@ -600,7 +600,7 @@ class CombatSolver:
                     step.block_gained += e_blk
                     step.notes += f"顶球激发{evoked}(+{e_dmg}伤/+{e_blk}甲) "
                 new_player.orbs.append(card.channel_orb)
-            step.notes += f"生成{card.channel_count}{card.channel_orb} "
+            step.notes += f"生成{card.channel_count}个{card.channel_orb}球 "
 
         if card.id.startswith("Dualcast") and new_player.orbs:
             evoked = new_player.orbs.pop(0)
