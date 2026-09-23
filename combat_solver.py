@@ -21,6 +21,7 @@ Features:
 """
 import copy
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
@@ -35,7 +36,7 @@ class SimMonster:
     current_hp: int
     max_hp: int
     block: int
-    intent: str
+    intent: str = "UNKNOWN"
     move_adjusted_damage: int = 0
     move_hits: int = 1
     is_attacking: bool = False
@@ -53,6 +54,9 @@ class SimMonster:
     invincible_damage_taken: int = 0
     is_gone: bool = False
     half_dead: bool = False
+    time_warp_counter: int = 0
+    curiosity: int = 0
+    awakened_phase: int = 1
 
     @property
     def is_alive(self) -> bool:
@@ -88,11 +92,35 @@ class SimPlayer:
     has_paper_frog: bool = False
     has_paper_crane: bool = False
     has_strike_dummy: bool = False
+    has_bronze_scales: bool = False
+    player_thorns: int = 0
+    has_torii: bool = False
+    has_unceasing_top: bool = False
+    has_necronomicon: bool = False
+    necronomicon_triggered: bool = False
+    has_calipers: bool = False
+    has_happy_flower: bool = False
+    has_lantern: bool = False
+    has_sundial: bool = False
+    sundial_counter: int = 0
+    has_ice_cream: bool = False
+    has_nunchaku: bool = False
+    nunchaku_count: int = 0
+    has_ink_bottle: bool = False
+    ink_bottle_count: int = 0
+    has_barricade: bool = False
+    temporary_strength: int = 0
+    temporary_dexterity: int = 0
+    plated_armor: int = 0
+    artifact: int = 0
+    is_intangible: bool = False
+    regen: int = 0
     accuracy_bonus: int = 0  # Silent shiv bonus
     feel_no_pain: int = 0    # Ironclad exhaust synergy (+3/4 block per exhaust)
     dark_embrace: int = 0    # Ironclad exhaust synergy (+1 draw per exhaust)
     has_corruption: bool = False  # Ironclad power (Skills cost 0 and exhaust)
     time_eater_active: bool = False
+    time_warp_base: int = 0
     cards_played_this_turn: int = 0
     beat_of_death: int = 0
     direct_damage_taken: int = 0
@@ -148,15 +176,17 @@ class CombatSolver:
 
         # Parse monsters
         monsters = [self._parse_monster(idx, m) for idx, m in enumerate(monsters_data)]
-        player.time_eater_active = any(self._is_time_eater(m) for m in monsters)
+        time_eater_monsters = [m for m in monsters if self._is_time_eater(m)]
+        player.time_eater_active = len(time_eater_monsters) > 0
+        player.time_warp_base = max((m.time_warp_counter for m in time_eater_monsters), default=0)
+
+        ascension = self._safe_int(combat_state.get("ascension_level"), 0)
         heart_monsters = [m for m in monsters if self._is_corrupt_heart(m)]
-        heart_beat_values = [m.beat_of_death for m in heart_monsters]
-        player.beat_of_death = max(heart_beat_values) if heart_beat_values else 0
-        if heart_monsters and player.beat_of_death <= 0:
-            player.beat_of_death = 1
+        heart_beat_values = [m.beat_of_death for m in heart_monsters if m.beat_of_death > 0]
+        player.beat_of_death = max(heart_beat_values) if heart_beat_values else ((2 if ascension >= 19 else 1) if heart_monsters else 0)
         for heart in heart_monsters:
             if heart.invincible_cap <= 0:
-                heart.invincible_cap = 200
+                heart.invincible_cap = 200 if ascension >= 19 else 300
         player.cards_played_this_turn = self._safe_int(combat_state.get("cards_played_this_turn"), 0)
         active_monsters = [m for m in monsters if m.is_alive]
 
@@ -199,10 +229,11 @@ class CombatSolver:
                 best_plan = plan
 
             # Depth & energy bound
+            effective_time_warp = curr_player.time_warp_base + curr_player.cards_played_this_turn
             if (
                 len(curr_steps) >= self.config.max_search_depth
                 or curr_player.energy <= 0
-                or (curr_player.time_eater_active and curr_player.cards_played_this_turn >= 12)
+                or (curr_player.time_eater_active and effective_time_warp >= 12)
             ):
                 card_actions_allowed = False
             else:
@@ -213,17 +244,18 @@ class CombatSolver:
                 if not self._is_supported_potion(potion):
                     continue
                 living_monsters = [m for m in curr_monsters if m.is_alive]
-                if not living_monsters:
+                if not living_monsters and not self._potion_usable_without_enemies(potion):
                     continue
-                targets = living_monsters if self._potion_targets_enemy(potion) else [None]
+                targets = living_monsters if self._potion_targets_single_enemy(potion) else [None]
                 for target in targets:
-                    next_player, next_monsters, potion_name = self._simulate_potion(
-                        curr_player, curr_monsters, potion, target
+                    next_player, next_monsters, potion_name, newly_drawn, next_draw, next_discard = self._simulate_potion(
+                        curr_player, curr_monsters, potion, target, curr_draw, curr_discard
                     )
                     next_potions = curr_potions[:potion_index] + curr_potions[potion_index + 1:]
+                    branch_hand = list(curr_hand) + newly_drawn
                     stack.append((
-                        next_player, next_monsters, list(curr_hand), list(curr_draw),
-                        list(curr_discard), next_potions, curr_potion_uses + [potion_name],
+                        next_player, next_monsters, branch_hand, next_draw,
+                        next_discard, next_potions, curr_potion_uses + [potion_name],
                         list(curr_steps)
                     ))
 
@@ -253,6 +285,16 @@ class CombatSolver:
                             curr_player, curr_monsters, orig_idx, card, target.index, curr_draw, curr_discard
                         )
                         branch_hand = next_hand + newly_drawn
+                        # Unceasing Top: draw 1 card when hand is empty
+                        if not branch_hand and next_player.has_unceasing_top and (next_draw or next_discard):
+                            if next_draw:
+                                top_c = next_draw.pop(0)
+                            else:
+                                next_draw = list(next_discard)
+                                next_discard = []
+                                top_c = next_draw.pop(0)
+                            branch_hand.append((3000 + len(curr_steps), top_c))
+                            step.notes += "(陀螺抽牌!) "
                         stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_potions, curr_potion_uses, curr_steps + [step]))
                 else:
                     if card_key in seen_branches:
@@ -263,6 +305,16 @@ class CombatSolver:
                         curr_player, curr_monsters, orig_idx, card, None, curr_draw, curr_discard
                     )
                     branch_hand = next_hand + newly_drawn
+                    # Unceasing Top: draw 1 card when hand is empty
+                    if not branch_hand and next_player.has_unceasing_top and (next_draw or next_discard):
+                        if next_draw:
+                            top_c = next_draw.pop(0)
+                        else:
+                            next_draw = list(next_discard)
+                            next_discard = []
+                            top_c = next_draw.pop(0)
+                        branch_hand.append((3000 + len(curr_steps), top_c))
+                        step.notes += "(陀螺抽牌!) "
                     stack.append((next_player, next_monsters, branch_hand, next_draw, next_discard, curr_potions, curr_potion_uses, curr_steps + [step]))
 
         if best_plan is None:
@@ -271,11 +323,58 @@ class CombatSolver:
         best_plan.computation_time_ms = round((time.time() - start_time) * 1000, 2)
         return best_plan
 
+    ZH_POTION_NAMES = {
+        "blockpotion": "护甲药水",
+        "dexteritypotion": "敏捷药水",
+        "strengthpotion": "力量药水",
+        "energypotion": "能量药水",
+        "ancientpotion": "远古药水",
+        "artifactpotion": "人工制品药水",
+        "ghostinajar": "幽灵药水",
+        "liquidbronze": "液体青铜",
+        "steroidpotion": "类固醇药水",
+        "speedpotion": "速度药水",
+        "focuspotion": "集中药水",
+        "essenceofsteel": "钢铁精华",
+        "swiftpotion": "迅捷药水",
+        "fruitjuice": "果汁",
+        "bloodpotion": "鲜血药水",
+        "healthpotion": "生命药水",
+        "regenpotion": "再生药水",
+        "firepotion": "火焰药水",
+        "explosivepotion": "爆炸药水",
+        "weakpotion": "虚弱药水",
+        "fearpotion": "恐惧药水",
+        "poisonpotion": "毒药水",
+    }
+
+    def _normalize_id(self, val: Any) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(val).lower())
+
     def _is_supported_potion(self, potion: Dict[str, Any]) -> bool:
-        return str(potion.get("id", potion.get("name", ""))) in {
-            "Block Potion", "Dexterity Potion", "Strength Potion", "Energy Potion",
-            "Fire Potion", "Explosive Potion", "Weak Potion", "FearPotion", "Poison Potion",
+        pid = self._normalize_id(potion.get("id") or potion.get("name") or "")
+        return pid in {
+            "blockpotion", "dexteritypotion", "strengthpotion", "energypotion",
+            "firepotion", "explosivepotion", "weakpotion", "fearpotion", "poisonpotion",
+            "ancientpotion", "artifactpotion", "ghostinajar", "liquidbronze",
+            "steroidpotion", "speedpotion", "focuspotion", "essenceofsteel",
+            "swiftpotion", "fruitjuice", "bloodpotion", "healthpotion", "fairypotion",
+            "regenpotion",
         }
+
+    def _potion_usable_without_enemies(self, potion: Dict[str, Any]) -> bool:
+        pid = self._normalize_id(potion.get("id") or potion.get("name") or "")
+        return pid in {
+            "fruitjuice", "healthpotion", "bloodpotion", "regenpotion", "fairypotion"
+        }
+
+    def _potion_targets_single_enemy(self, potion: Dict[str, Any]) -> bool:
+        pid = self._normalize_id(potion.get("id") or potion.get("name") or "")
+        return pid in {"firepotion", "weakpotion", "fearpotion", "poisonpotion"}
+
+    def _potion_targets_enemy(self, potion: Dict[str, Any]) -> bool:
+        pid = self._normalize_id(potion.get("id") or potion.get("name") or "")
+        return pid in {"firepotion", "explosivepotion", "weakpotion", "fearpotion", "poisonpotion"}
 
     def _is_time_eater(self, monster: SimMonster) -> bool:
         normalized = "".join(ch for ch in f"{monster.id} {monster.name}".lower() if ch.isalnum())
@@ -303,11 +402,6 @@ class CombatSolver:
         except (TypeError, ValueError):
             return default
 
-    def _potion_targets_enemy(self, potion: Dict[str, Any]) -> bool:
-        return str(potion.get("id", potion.get("name", ""))) in {
-            "Fire Potion", "Explosive Potion", "Weak Potion", "FearPotion", "Poison Potion",
-        }
-
     def _potion_amount(self, potion: Dict[str, Any], default: int) -> int:
         try:
             return int(potion.get("amount", default))
@@ -320,50 +414,105 @@ class CombatSolver:
         monsters: List[SimMonster],
         potion: Dict[str, Any],
         target: Optional[SimMonster],
-    ) -> Tuple[SimPlayer, List[SimMonster], str]:
+        draw_pile: Optional[List[CardInfo]] = None,
+        discard_pile: Optional[List[CardInfo]] = None,
+    ) -> Tuple[SimPlayer, List[SimMonster], str, List[Tuple[int, CardInfo]], List[CardInfo], List[CardInfo]]:
         new_player = copy.deepcopy(player)
         new_monsters = copy.deepcopy(monsters)
-        potion_id = str(potion.get("id", potion.get("name", "")))
+        next_draw = list(draw_pile) if draw_pile is not None else []
+        next_discard = list(discard_pile) if discard_pile is not None else []
+        newly_drawn: List[Tuple[int, CardInfo]] = []
+
+        potion_raw_id = str(potion.get("id", potion.get("name", "")))
+        pid = self._normalize_id(potion_raw_id)
+        potion_name = str(potion.get("name") or self.ZH_POTION_NAMES.get(pid, potion_raw_id))
         amount = self._potion_amount(potion, 0)
-        if potion_id == "Block Potion":
+
+        if pid == "blockpotion":
             new_player.block += amount or 12
-        elif potion_id == "Dexterity Potion":
+        elif pid == "dexteritypotion":
             new_player.dexterity += amount or 2
-        elif potion_id == "Strength Potion":
+        elif pid == "strengthpotion":
             new_player.strength += amount or 2
-        elif potion_id == "Energy Potion":
+        elif pid == "energypotion":
             new_player.energy += amount or 2
+        elif pid in ("ancientpotion", "artifactpotion"):
+            new_player.artifact += amount or 1
+        elif pid == "ghostinajar":
+            new_player.is_intangible = True
+        elif pid == "liquidbronze":
+            new_player.player_thorns += amount or 3
+        elif pid == "steroidpotion":
+            gain = amount or 5
+            new_player.strength += gain
+            new_player.temporary_strength += gain
+        elif pid == "speedpotion":
+            gain = amount or 5
+            new_player.dexterity += gain
+            new_player.temporary_dexterity += gain
+        elif pid == "focuspotion":
+            new_player.focus += amount or 2
+        elif pid == "essenceofsteel":
+            new_player.plated_armor += amount or 4
+        elif pid == "fruitjuice":
+            gain = amount or 5
+            new_player.max_hp += gain
+            new_player.current_hp += gain
+        elif pid == "bloodpotion":
+            pct = (amount or 20) / 100.0
+            heal = max(1, int(new_player.max_hp * pct))
+            new_player.current_hp = min(new_player.max_hp, new_player.current_hp + heal)
+        elif pid == "healthpotion":
+            new_player.current_hp = min(new_player.max_hp, new_player.current_hp + (amount or 12))
+        elif pid == "regenpotion":
+            new_player.regen += amount or 5
+        elif pid == "swiftpotion":
+            cards_to_draw = amount or 3
+            for _ in range(cards_to_draw):
+                if next_draw:
+                    c = next_draw.pop(0)
+                    newly_drawn.append((2500 + len(newly_drawn), c))
+                elif next_discard:
+                    next_draw = list(next_discard)
+                    next_discard = []
+                    c = next_draw.pop(0)
+                    newly_drawn.append((2500 + len(newly_drawn), c))
+                else:
+                    break
+        elif pid == "explosivepotion":
+            damage = amount or 10
+            for monster in new_monsters:
+                if monster.is_alive:
+                    eff_dmg = self._effective_monster_damage(monster, damage)
+                    unblocked = max(0, eff_dmg - monster.block)
+                    monster.block = max(0, monster.block - eff_dmg)
+                    monster.current_hp = max(0, monster.current_hp - unblocked)
         elif target is not None:
             target_index = target.index
             monster = new_monsters[target_index]
-            if potion_id == "Fire Potion":
+            if pid == "firepotion":
                 damage = amount or 20
-                damage = self._effective_monster_damage(monster, damage)
-                monster.current_hp = max(0, monster.current_hp - max(0, damage - monster.block))
-                monster.block = max(0, monster.block - damage)
-            elif potion_id == "Explosive Potion":
-                damage = amount or 10
-                for monster in new_monsters:
-                    if monster.is_alive:
-                        damage = self._effective_monster_damage(monster, damage)
-                        monster.current_hp = max(0, monster.current_hp - max(0, damage - monster.block))
-                        monster.block = max(0, monster.block - damage)
-            elif potion_id == "Weak Potion":
+                eff_dmg = self._effective_monster_damage(monster, damage)
+                unblocked = max(0, eff_dmg - monster.block)
+                monster.block = max(0, monster.block - eff_dmg)
+                monster.current_hp = max(0, monster.current_hp - unblocked)
+            elif pid == "weakpotion":
                 if monster.artifact > 0:
                     monster.artifact -= 1
                 else:
                     monster.weak_turns += amount or 3
-            elif potion_id == "FearPotion":
+            elif pid == "fearpotion":
                 if monster.artifact > 0:
                     monster.artifact -= 1
                 else:
                     monster.vulnerable_turns += amount or 3
-            elif potion_id == "Poison Potion":
+            elif pid == "poisonpotion":
                 if monster.artifact > 0:
                     monster.artifact -= 1
                 else:
                     monster.poison += amount or 6
-        return new_player, new_monsters, str(potion.get("name", potion_id))
+
+        return new_player, new_monsters, potion_name, newly_drawn, next_draw, next_discard
 
     def _evoke_orb(
         self,
@@ -435,7 +584,7 @@ class CombatSolver:
                     monster.awakened_one_bonus += 1
                     step.notes += "🦅 觉醒者好奇：Boss力量+1 "
 
-        if new_player.time_eater_active and new_player.cards_played_this_turn == 12:
+        if new_player.time_eater_active and (new_player.time_warp_base + new_player.cards_played_this_turn) == 12:
             for monster in new_monsters:
                 if self._is_time_eater(monster):
                     monster.time_eater_bonus += 2
@@ -478,12 +627,35 @@ class CombatSolver:
                 elif next_discard_pile:
                     next_draw_pile = list(next_discard_pile)
                     next_discard_pile = []
+                    # Sundial trigger on shuffle
+                    new_player.sundial_counter += 1
+                    if new_player.has_sundial and new_player.sundial_counter % 3 == 0:
+                        new_player.energy += 2
+                        step.notes += "+2能量(日晷) "
                     drawn_card = next_draw_pile.pop(0)
                     newly_drawn.append((1000 + len(newly_drawn), drawn_card))
                 else:
                     break
             if newly_drawn:
                 step.notes += f"抽{len(newly_drawn)}牌 "
+
+        # InkBottle relic: every 10 cards played, draw 1 card
+        new_player.ink_bottle_count += 1
+        if new_player.has_ink_bottle and new_player.ink_bottle_count % 10 == 0:
+            if next_draw_pile:
+                ib_card = next_draw_pile.pop(0)
+                newly_drawn.append((1500 + len(newly_drawn), ib_card))
+                step.notes += "+1抽牌(墨水瓶) "
+            elif next_discard_pile:
+                next_draw_pile = list(next_discard_pile)
+                next_discard_pile = []
+                new_player.sundial_counter += 1
+                if new_player.has_sundial and new_player.sundial_counter % 3 == 0:
+                    new_player.energy += 2
+                    step.notes += "+2能量(日晷) "
+                ib_card = next_draw_pile.pop(0)
+                newly_drawn.append((1500 + len(newly_drawn), ib_card))
+                step.notes += "+1抽牌(墨水瓶) "
 
         # 1. Stance Changes (Watcher)
         if card.stance:
@@ -622,6 +794,11 @@ class CombatSolver:
         if card.card_type == "ATTACK" and (card.base_damage > 0 or card.id.startswith("Body Slam")):
             new_player.attacks_played_this_turn += 1
             new_player.pen_nib_count += 1
+            new_player.nunchaku_count += 1
+
+            if new_player.has_nunchaku and new_player.nunchaku_count % 10 == 0:
+                new_player.energy += 1
+                step.notes += "+1能量(双节棍) "
 
             # Relic triggers every 3 attacks
             if new_player.has_kunai and new_player.attacks_played_this_turn % 3 == 0:
@@ -634,125 +811,152 @@ class CombatSolver:
                 new_player.block += 4
                 step.notes += "+4格挡(折扇) "
 
-            dmg_base = card.base_damage
-            if card.id.startswith("Body Slam"):
-                dmg_base = new_player.block
+            necro_repeat = 1
+            if effective_cost >= 2 and new_player.has_necronomicon and not new_player.necronomicon_triggered:
+                new_player.necronomicon_triggered = True
+                necro_repeat = 2
+                step.notes += "(死灵之书双发!) "
 
-            if new_player.has_strike_dummy and "strike" in card.name.lower():
-                dmg_base += 3
+            for _ in range(necro_repeat):
+                dmg_base = card.base_damage
+                if card.id.startswith("Body Slam"):
+                    dmg_base = new_player.block
 
-            if "shiv" in card.name.lower():
-                dmg_base += new_player.accuracy_bonus
+                if new_player.has_strike_dummy and "strike" in card.name.lower():
+                    dmg_base += 3
 
-            dmg = dmg_base + new_player.strength
+                if "shiv" in card.name.lower():
+                    dmg_base += new_player.accuracy_bonus
 
-            # Player Weak
-            if new_player.weak_turns > 0:
-                dmg = math.floor(dmg * 0.75)
+                dmg = dmg_base + new_player.strength
 
-            # Watcher Stances
-            if new_player.stance == "Wrath":
-                dmg *= 2
-            elif new_player.stance == "Divinity":
-                dmg *= 3
+                # Player Weak
+                if new_player.weak_turns > 0:
+                    dmg = math.floor(dmg * 0.75)
 
-            # Pen Nib double damage timing
-            if new_player.pen_nib_count == 10:
-                dmg *= 2
-                new_player.pen_nib_count = 0
-                step.notes += "(🖊️钢笔尖第10击双倍!) "
+                # Watcher Stances
+                if new_player.stance == "Wrath":
+                    dmg *= 2
+                elif new_player.stance == "Divinity":
+                    dmg *= 3
 
-            dmg = max(0, dmg)
-            vuln_mult = 1.75 if new_player.has_paper_frog else 1.5
+                # Pen Nib double damage timing
+                if new_player.pen_nib_count == 10:
+                    dmg *= 2
+                    new_player.pen_nib_count = 0
+                    step.notes += "(🖊️钢笔尖第10击双倍!) "
 
-            # Bane synergy: 2x hits if target has poison
-            hits = card.hits
-            if card.id.startswith("Bane") and target_idx is not None and 0 <= target_idx < len(new_monsters):
-                if new_monsters[target_idx].poison > 0:
-                    hits = 2
-                    step.notes += "(剧毒双击!) "
+                dmg = max(0, dmg)
+                vuln_mult = 1.75 if new_player.has_paper_frog else 1.5
 
-            if card.is_aoe:
-                total_dealt = 0
-                step.target_name = "所有敌人"
-                for m in new_monsters:
-                    if not m.is_alive:
-                        continue
-                    # Monster Curl Up
-                    if m.curl_up > 0:
-                        m.block += m.curl_up
-                        step.notes += f"{m.name} 卷曲+{m.curl_up}甲 "
-                        m.curl_up = 0
-                    # Monster Thorns
-                    if m.thorns > 0:
-                        thorns_dmg = m.thorns * hits
-                        unblocked_thorns = max(0, thorns_dmg - new_player.block)
-                        new_player.block = max(0, new_player.block - thorns_dmg)
-                        new_player.current_hp = max(0, new_player.current_hp - unblocked_thorns)
-                        step.notes += f"荆棘反伤{thorns_dmg} "
+                # Bane synergy: 2x hits if target has poison
+                hits = card.hits
+                if card.id.startswith("Bane") and target_idx is not None and 0 <= target_idx < len(new_monsters):
+                    if new_monsters[target_idx].poison > 0:
+                        hits = 2
+                        step.notes += "(剧毒双击!) "
 
-                    final_dmg = dmg
-                    if m.vulnerable_turns > 0:
-                        final_dmg = math.floor(final_dmg * vuln_mult)
-                    final_dmg *= hits
-                    final_dmg = self._effective_monster_damage(m, final_dmg)
-                    unblocked = max(0, final_dmg - m.block)
-                    m.block = max(0, m.block - final_dmg)
-                    m.current_hp = max(0, m.current_hp - unblocked)
-                    total_dealt += final_dmg
-                    if card.vulnerable_applied > 0:
-                        if m.artifact > 0:
-                            m.artifact -= 1
-                            step.notes += f"{m.name} 人工制品抵消易伤 "
-                        else:
-                            m.vulnerable_turns += card.vulnerable_applied
-                    if card.weak_applied > 0:
-                        if m.artifact > 0:
-                            m.artifact -= 1
-                            step.notes += f"{m.name} 人工制品抵消虚弱 "
-                        else:
-                            m.weak_turns += card.weak_applied
-                step.damage_dealt += total_dealt
-            elif target_idx is not None and 0 <= target_idx < len(new_monsters):
-                target = new_monsters[target_idx]
-                step.target_name = target.name
-                if target.is_alive:
-                    # Monster Curl Up
-                    if target.curl_up > 0:
-                        target.block += target.curl_up
-                        step.notes += f"{target.name} 卷曲+{target.curl_up}甲 "
-                        target.curl_up = 0
-                    # Monster Thorns
-                    if target.thorns > 0:
-                        thorns_dmg = target.thorns * hits
-                        unblocked_thorns = max(0, thorns_dmg - new_player.block)
-                        new_player.block = max(0, new_player.block - thorns_dmg)
-                        new_player.current_hp = max(0, new_player.current_hp - unblocked_thorns)
-                        step.notes += f"荆棘反伤{thorns_dmg} "
+                if card.is_aoe:
+                    total_dealt = 0
+                    step.target_name = "所有敌人"
+                    for m in new_monsters:
+                        if not m.is_alive:
+                            continue
+                        # Monster Curl Up
+                        if m.curl_up > 0:
+                            m.block += m.curl_up
+                            step.notes += f"{m.name} 卷曲+{m.curl_up}甲 "
+                            m.curl_up = 0
+                        # Monster Thorns
+                        if m.thorns > 0:
+                            thorns_dmg = m.thorns * hits
+                            unblocked_thorns = max(0, thorns_dmg - new_player.block)
+                            new_player.block = max(0, new_player.block - thorns_dmg)
+                            new_player.current_hp = max(0, new_player.current_hp - unblocked_thorns)
+                            step.notes += f"荆棘反伤{thorns_dmg} "
 
-                    final_dmg = dmg
-                    if target.vulnerable_turns > 0:
-                        final_dmg = math.floor(final_dmg * vuln_mult)
-                    final_dmg *= hits
-                    final_dmg = self._effective_monster_damage(target, final_dmg)
-                    unblocked = max(0, final_dmg - target.block)
-                    target.block = max(0, target.block - final_dmg)
-                    target.current_hp = max(0, target.current_hp - unblocked)
-                    step.damage_dealt += final_dmg
-                    if card.vulnerable_applied > 0:
-                        if target.artifact > 0:
-                            target.artifact -= 1
-                            step.notes += f"{target.name} 人工制品抵消易伤 "
-                        else:
-                            target.vulnerable_turns += card.vulnerable_applied
-                            step.notes += f"给予{card.vulnerable_applied}易伤 "
-                    if card.weak_applied > 0:
-                        if target.artifact > 0:
-                            target.artifact -= 1
-                            step.notes += f"{target.name} 人工制品抵消虚弱 "
-                        else:
-                            target.weak_turns += card.weak_applied
-                            step.notes += f"给予{card.weak_applied}虚弱 "
+                        final_dmg = dmg
+                        if m.vulnerable_turns > 0:
+                            final_dmg = math.floor(final_dmg * vuln_mult)
+                        final_dmg *= hits
+                        final_dmg = self._effective_monster_damage(m, final_dmg)
+                        unblocked = max(0, final_dmg - m.block)
+                        m.block = max(0, m.block - final_dmg)
+                        m.current_hp = max(0, m.current_hp - unblocked)
+                        total_dealt += final_dmg
+                        if card.vulnerable_applied > 0:
+                            if m.artifact > 0:
+                                m.artifact -= 1
+                                step.notes += f"{m.name} 人工制品抵消易伤 "
+                            else:
+                                m.vulnerable_turns += card.vulnerable_applied
+                        if card.weak_applied > 0:
+                            if m.artifact > 0:
+                                m.artifact -= 1
+                                step.notes += f"{m.name} 人工制品抵消虚弱 "
+                            else:
+                                m.weak_turns += card.weak_applied
+                        # Awakened One Phase 2 check
+                        if self._is_awakened_one(m) and m.current_hp == 0 and m.awakened_phase == 1:
+                            m.awakened_phase = 2
+                            m.current_hp = m.max_hp
+                            m.curiosity = 0
+                            m.poison = 0
+                            m.vulnerable_turns = 0
+                            m.weak_turns = 0
+                            m.strength += 2
+                            step.notes += "🦅 觉醒者一阶段击破（进入二阶段重生） "
+                    step.damage_dealt += total_dealt
+                elif target_idx is not None and 0 <= target_idx < len(new_monsters):
+                    target = new_monsters[target_idx]
+                    step.target_name = target.name
+                    if target.is_alive:
+                        # Monster Curl Up
+                        if target.curl_up > 0:
+                            target.block += target.curl_up
+                            step.notes += f"{target.name} 卷曲+{target.curl_up}甲 "
+                            target.curl_up = 0
+                        # Monster Thorns
+                        if target.thorns > 0:
+                            thorns_dmg = target.thorns * hits
+                            unblocked_thorns = max(0, thorns_dmg - new_player.block)
+                            new_player.block = max(0, new_player.block - thorns_dmg)
+                            new_player.current_hp = max(0, new_player.current_hp - unblocked_thorns)
+                            step.notes += f"荆棘反伤{thorns_dmg} "
+
+                        final_dmg = dmg
+                        if target.vulnerable_turns > 0:
+                            final_dmg = math.floor(final_dmg * vuln_mult)
+                        final_dmg *= hits
+                        final_dmg = self._effective_monster_damage(target, final_dmg)
+                        unblocked = max(0, final_dmg - target.block)
+                        target.block = max(0, target.block - final_dmg)
+                        target.current_hp = max(0, target.current_hp - unblocked)
+                        step.damage_dealt += final_dmg
+                        if card.vulnerable_applied > 0:
+                            if target.artifact > 0:
+                                target.artifact -= 1
+                                step.notes += f"{target.name} 人工制品抵消易伤 "
+                            else:
+                                target.vulnerable_turns += card.vulnerable_applied
+                                step.notes += f"给予{card.vulnerable_applied}易伤 "
+                        if card.weak_applied > 0:
+                            if target.artifact > 0:
+                                target.artifact -= 1
+                                step.notes += f"{target.name} 人工制品抵消虚弱 "
+                            else:
+                                target.weak_turns += card.weak_applied
+                                step.notes += f"给予{card.weak_applied}虚弱 "
+                        # Awakened One Phase 2 check
+                        if self._is_awakened_one(target) and target.current_hp == 0 and target.awakened_phase == 1:
+                            target.awakened_phase = 2
+                            target.current_hp = target.max_hp
+                            target.curiosity = 0
+                            target.poison = 0
+                            target.vulnerable_turns = 0
+                            target.weak_turns = 0
+                            target.strength += 2
+                            step.notes += "🦅 觉醒者一阶段击破（进入二阶段重生） "
 
         return new_player, new_monsters, step, newly_drawn, next_draw_pile, next_discard_pile
 
@@ -774,7 +978,7 @@ class CombatSolver:
 
         forecast_parts = []
 
-        if player_copy.time_eater_active and player_copy.cards_played_this_turn >= 12:
+        if player_copy.time_eater_active and (player_copy.time_warp_base + player_copy.cards_played_this_turn) >= 12:
             forecast_parts.append("[时光吞噬者: 12张牌后强制结束回合]")
         if any(self._is_awakened_one(monster) and monster.awakened_one_bonus > 0 for monster in monsters_copy):
             forecast_parts.append("[觉醒者好奇: 每张能力牌使Boss力量+1]")
@@ -815,16 +1019,22 @@ class CombatSolver:
         if total_poison_dmg > 0:
             forecast_parts.append(f"[回合末毒伤: {total_poison_dmg}]")
 
+        # 2.5 Plated Armor end-of-turn block
+        if player_copy.plated_armor > 0:
+            player_copy.block += player_copy.plated_armor
+            forecast_parts.append(f"[金属化: +{player_copy.plated_armor}甲]")
+
         # 3. Orichalcum (+6 block if 0 block at turn end)
         if player_copy.has_orichalcum and player_copy.block == 0:
             player_copy.block += 6
             forecast_parts.append("[奥利哈钢: +6甲]")
 
-        # 4. Incense Burner (Turn 6 gives Intangible)
-        is_intangible = False
-        if player_copy.has_incense_burner and player_copy.turn % 6 == 0:
-            is_intangible = True
-            forecast_parts.append("[香炉: 获得无实体]")
+        # 4. Incense Burner & Ghost in a Jar (Intangible)
+        is_intangible = player_copy.is_intangible or (
+            player_copy.has_incense_burner and player_copy.turn % 6 == 0
+        )
+        if is_intangible:
+            forecast_parts.append("[无实体: 单次伤害上限1]")
 
         # 5. Calculate Incoming Monster Damage & Lethal Cancellations
         projected_incoming = 0
@@ -852,8 +1062,38 @@ class CombatSolver:
 
                 projected_incoming += dmg * m.move_hits
 
-        hp_loss = direct_damage_taken + max(0, projected_incoming - player_copy.block)
-        excess_block = max(0, player_copy.block - projected_incoming)
+                # Bronze Scales / Player Thorns counter-damage
+                if player_copy.player_thorns > 0 and m.is_alive:
+                    thorns_dmg = player_copy.player_thorns * m.move_hits
+                    unblocked_thorns = max(0, thorns_dmg - m.block)
+                    m.block = max(0, m.block - thorns_dmg)
+                    m.current_hp = max(0, m.current_hp - unblocked_thorns)
+                    forecast_parts.append(f"[{m.name}受荆棘反伤{thorns_dmg}]")
+
+        unblocked_attack = max(0, projected_incoming - player_copy.block)
+        # Torii: unblocked attack damage of 5 or less is reduced to 1!
+        if player_copy.has_torii and 1 < unblocked_attack <= 5:
+            unblocked_attack = 1
+            forecast_parts.append("[鸟居减免至1]")
+
+        hp_loss = direct_damage_taken + unblocked_attack
+
+        # Calipers & Barricade block retention
+        if player_copy.has_calipers:
+            retained_block = max(0, player_copy.block - projected_incoming - 15)
+            excess_block = retained_block
+            if retained_block > 0:
+                forecast_parts.append(f"[游标卡尺保留: {retained_block}甲]")
+        elif player_copy.has_barricade:
+            excess_block = max(0, player_copy.block - projected_incoming)
+            if excess_block > 0:
+                forecast_parts.append(f"[壁垒保留: {excess_block}甲]")
+        else:
+            excess_block = max(0, player_copy.block - projected_incoming)
+
+        # Ice Cream energy retention forecast
+        if player_copy.has_ice_cream and player_copy.energy > 0:
+            forecast_parts.append(f"[冰淇淋保留能量: {player_copy.energy}⚡]")
 
         # Multi-objective fitness score
         score = (
@@ -935,11 +1175,32 @@ class CombatSolver:
             except (ValueError, TypeError):
                 return default
 
+        has_bronze_scales = ("Bronze Scales" in relic_ids)
+        has_torii = ("Torii" in relic_ids)
+        has_unceasing_top = ("Unceasing Top" in relic_ids)
+        has_necronomicon = ("Necronomicon" in relic_ids)
+        has_calipers = ("Calipers" in relic_ids)
+        has_happy_flower = ("Happy Flower" in relic_ids)
+        has_lantern = ("Lantern" in relic_ids)
+        has_sundial = ("Sundial" in relic_ids)
+        has_ice_cream = ("Ice Cream" in relic_ids)
+        has_nunchaku = ("Nunchaku" in relic_ids)
+        has_ink_bottle = ("InkBottle" in relic_ids)
+        has_barricade = ("Barricade" in powers)
+
+        init_energy = max(0, _get_int(data.get("energy"), 3))
+        if has_lantern and turn == 1:
+            init_energy += 1
+        if has_happy_flower:
+            flower_cnt = relic_ids.get("Happy Flower", -1)
+            if flower_cnt == 2 or (flower_cnt == -1 and turn % 3 == 0):
+                init_energy += 1
+
         player = SimPlayer(
             current_hp=_get_int(data.get("current_hp"), 80),
             max_hp=max(1, _get_int(data.get("max_hp"), 80)),
             block=max(0, _get_int(data.get("block"), 0)),
-            energy=max(0, _get_int(data.get("energy"), 3)),
+            energy=init_energy,
             strength=powers.get("Strength", 0),
             dexterity=powers.get("Dexterity", 0),
             focus=powers.get("Focus", 0),
@@ -959,6 +1220,26 @@ class CombatSolver:
             has_paper_frog=("Paper Frog" in relic_ids),
             has_paper_crane=("Paper Crane" in relic_ids),
             has_strike_dummy=("StrikeDummy" in relic_ids),
+            has_bronze_scales=has_bronze_scales,
+            player_thorns=powers.get("Thorns", 0) + (3 if has_bronze_scales else 0),
+            has_torii=has_torii,
+            has_unceasing_top=has_unceasing_top,
+            has_necronomicon=has_necronomicon,
+            has_calipers=has_calipers,
+            has_happy_flower=has_happy_flower,
+            has_lantern=has_lantern,
+            has_sundial=has_sundial,
+            sundial_counter=max(0, relic_ids.get("Sundial", 0)),
+            has_ice_cream=has_ice_cream,
+            has_nunchaku=has_nunchaku,
+            nunchaku_count=max(0, relic_ids.get("Nunchaku", 0)),
+            has_ink_bottle=has_ink_bottle,
+            ink_bottle_count=max(0, relic_ids.get("InkBottle", 0)),
+            has_barricade=has_barricade,
+            temporary_strength=powers.get("Flex", 0),
+            temporary_dexterity=powers.get("Speed", 0),
+            plated_armor=powers.get("Plated Armor", 0),
+            artifact=powers.get("Artifact", 0),
             accuracy_bonus=powers.get("Accuracy", 0),
             feel_no_pain=powers.get("Feel No Pain", 0),
             dark_embrace=powers.get("Dark Embrace", 0),
@@ -990,10 +1271,19 @@ class CombatSolver:
                     except (ValueError, TypeError):
                         powers[str(pid)] = 0
 
+        m_id = str(data.get("id", f"Monster_{index}"))
+        m_name = str(data.get("name", f"Monster {index+1}"))
+        normalized = "".join(ch for ch in f"{m_id} {m_name}".lower() if ch.isalnum())
+        is_awakened = "awakenedone" in normalized or "觉醒者" in normalized
+        awakened_phase = 1
+        if is_awakened:
+            if "unawakened" not in powers and "curiosity" not in (k.lower() for k in powers):
+                awakened_phase = 2
+
         return SimMonster(
             index=index,
-            id=str(data.get("id", f"Monster_{index}")),
-            name=str(data.get("name", f"Monster {index+1}")),
+            id=m_id,
+            name=m_name,
             current_hp=max(0, _get_int(data.get("current_hp"), 10)),
             max_hp=max(1, _get_int(data.get("max_hp"), 10)),
             block=max(0, _get_int(data.get("block"), 0)),
@@ -1011,5 +1301,8 @@ class CombatSolver:
             thorns=powers.get("Thorns", 0),
             beat_of_death=powers.get("Beat of Death", 0),
             is_gone=bool(data.get("is_gone", False)),
-            half_dead=bool(data.get("half_dead", False))
+            half_dead=bool(data.get("half_dead", False)),
+            time_warp_counter=powers.get("Time Warp", 0),
+            curiosity=powers.get("Curiosity", 0),
+            awakened_phase=awakened_phase,
         )

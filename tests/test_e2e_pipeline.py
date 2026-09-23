@@ -881,5 +881,194 @@ class TestE2EPipeline(unittest.TestCase):
         self.assertEqual(p4.energy, p3.energy - 1 + 2)
         self.assertIn("姿态", s4.notes)
 
+    def test_relic_bronze_scales_and_torii_simulation(self):
+        """
+        验证高危战术遗物仿真：
+        1. 铜制鳞片 (Bronze Scales): 敌人攻击时反弹 3 点伤害；
+        2. 鸟居 (Torii): 受到未格挡攻击伤害 <= 5 时削减至 1 点。
+        """
+        # 测试 1: 鸟居削减伤害 (5 点未格挡伤害削减为 1 点)
+        combat_state = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 3},
+            "relics": [{"id": "Torii"}],
+            "monsters": [{"id": "Cultist", "current_hp": 40, "max_hp": 50, "intent": "ATTACK", "move_adjusted_damage": 5, "move_hits": 1}],
+            "hand": [],
+        }
+        plan = self.solver.solve(combat_state)
+        self.assertEqual(plan.projected_incoming_damage, 5)
+        self.assertEqual(plan.projected_hp_loss, 1)  # 5 减免至 1!
+        self.assertIn("鸟居减免至1", plan.end_of_turn_forecast)
+
+        # 测试 2: 铜制鳞片反伤 (敌人 4 段攻击，每段受到 3 点反伤，共 12 点)
+        combat_state_scales = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 20, "energy": 3},
+            "relics": [{"id": "Bronze Scales"}],
+            "monsters": [{"id": "Byrd", "name": "Byrd", "current_hp": 25, "max_hp": 25, "block": 0, "intent": "ATTACK", "move_adjusted_damage": 2, "move_hits": 4}],
+            "hand": [],
+        }
+        plan_scales = self.solver.solve(combat_state_scales)
+        self.assertIn("受荆棘反伤12", plan_scales.end_of_turn_forecast)
+
+    def test_relic_necronomicon_and_unceasing_top(self):
+        """
+        验证核心回牌与倍伤遗物：
+        1. 死灵之书 (Necronomicon): 每回合第一张耗能 >= 2 的攻击牌连击打出两次；
+        2. 陀螺 (Unceasing Top): 手牌耗尽且牌库有牌时触发抽牌并展开求解。
+        """
+        # 1. 死灵之书双发
+        player = SimPlayer(current_hp=80, max_hp=80, block=0, energy=3, has_necronomicon=True)
+        monster = SimMonster(index=0, id="Cultist", name="Cultist", current_hp=50, max_hp=50, block=0)
+        carnage = resolve_card_info({"id": "Carnage", "name": "Carnage", "cost": 2, "type": "ATTACK"})
+        p_res, m_res, step, _, _, _ = self.solver._simulate_play_card(player, [monster], 0, carnage, 0)
+        self.assertTrue(p_res.necronomicon_triggered)
+        self.assertIn("死灵之书双发", step.notes)
+        self.assertEqual(step.damage_dealt, 40)  # 20 * 2 = 40
+
+        # 2. 陀螺 (Unceasing Top) 触发
+        combat_state_top = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 3},
+            "relics": [{"id": "Unceasing Top"}],
+            "monsters": [{"id": "Louse", "current_hp": 12, "max_hp": 15, "intent": "ATTACK", "move_adjusted_damage": 6}],
+            "hand": [{"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"}],
+            "draw_pile": [{"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"}],
+        }
+        plan_top = self.solver.solve(combat_state_top)
+        # 打出一张 Strike 杀不死 (6伤)，陀螺自动抽第二张 Strike 打出击杀 12HP 虱虫！
+        self.assertEqual(plan_top.monsters_killed, 1)
+        self.assertEqual(plan_top.total_damage_dealt, 12)
+        self.assertEqual(len(plan_top.steps), 2)
+        self.assertIn("陀螺抽牌", plan_top.steps[0].notes)
+
+    def test_relic_energy_and_draw_counters(self):
+        """
+        验证计数型遗物时序：
+        1. 提灯 (Lantern): 第 1 回合初始能量 +1；
+        2. 开心小花 (Happy Flower): counter 为 2 时开局初始能量 +1；
+        3. 双节棍 (Nunchaku): 打出第 10 张攻击牌额外获得 1 点能量；
+        4. 墨水瓶 (InkBottle): 打出第 10 张牌触发抽 1 张牌；
+        5. 游标卡尺 (Calipers): 回合末多余格挡保留 (总格挡 - 15)。
+        """
+        # 1 & 2: Lantern & Happy Flower
+        combat_state = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 3},
+            "relics": [{"id": "Lantern"}, {"id": "Happy Flower", "counter": 2}],
+            "turn": 1,
+            "monsters": [{"id": "Cultist", "current_hp": 40, "max_hp": 50}],
+            "hand": [],
+        }
+        plan = self.solver.solve(combat_state)
+        # 3 base + 1 Lantern + 1 Happy Flower = 5 energy
+        self.assertEqual(plan.remaining_energy, 5)
+
+        # 3: Nunchaku
+        p = SimPlayer(current_hp=80, max_hp=80, block=0, energy=1, has_nunchaku=True, nunchaku_count=9)
+        m = SimMonster(index=0, id="Cultist", name="Cultist", current_hp=50, max_hp=50, block=0)
+        strike = resolve_card_info({"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"})
+        p_res, _, step_nun, _, _, _ = self.solver._simulate_play_card(p, [m], 0, strike, 0)
+        self.assertIn("双节棍", step_nun.notes)
+        self.assertEqual(p_res.energy, 1 - 1 + 1)  # 1 cost + 1 nunchaku refund
+
+        # 4: InkBottle
+        p_ib = SimPlayer(current_hp=80, max_hp=80, block=0, energy=2, has_ink_bottle=True, ink_bottle_count=9)
+        defend = resolve_card_info({"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"})
+        draw_pile = [strike]
+        p_ib_res, _, step_ib, newly_drawn, _, _ = self.solver._simulate_play_card(p_ib, [m], 0, defend, None, draw_pile=draw_pile)
+        self.assertIn("墨水瓶", step_ib.notes)
+        self.assertEqual(len(newly_drawn), 1)
+
+        # 5: Calipers
+        p_cal = SimPlayer(current_hp=80, max_hp=80, block=40, energy=0, has_calipers=True)
+        m_idle = SimMonster(index=0, id="Cultist", name="Cultist", current_hp=50, max_hp=50, block=0, intent="DEFEND")
+        plan_cal = self.solver._evaluate_state(p_cal, [m_idle], [], 0)
+        # 40 block - 15 = 25 retained
+        self.assertIn("游标卡尺保留: 25甲", plan_cal.end_of_turn_forecast)
+
+    def test_expanded_potions_tactical_evaluation(self):
+        """
+        验证扩展药水体系数值与时序：
+        1. 幽灵药水 (Ghost in a Jar): 获得无实体 (Intangible)，受击伤害锁定为 1；
+        2. 迅捷药水 (Swift Potion): 抽 3 张手牌加入分支探索。
+        """
+        # 1. 幽灵药水
+        combat_state_ghost = {
+            "player": {"current_hp": 50, "max_hp": 80, "block": 0, "energy": 3},
+            "monsters": [{"id": "Gremlin Nob", "current_hp": 80, "max_hp": 80, "intent": "ATTACK", "move_adjusted_damage": 30, "move_hits": 1}],
+            "hand": [],
+            "potions": [{"id": "GhostInAJar", "name": "幽灵药水"}],
+        }
+        plan_ghost = self.solver.solve(combat_state_ghost)
+        self.assertEqual(plan_ghost.projected_hp_loss, 1)  # 30 伤直降为 1 伤！
+        self.assertEqual(plan_ghost.potion_uses, ["幽灵药水"])
+
+        # 2. 迅捷药水 (Swift Potion) 抽 3 牌促成斩杀
+        combat_state_swift = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 3},
+            "monsters": [{"id": "Cultist", "current_hp": 18, "max_hp": 50, "intent": "ATTACK", "move_adjusted_damage": 12}],
+            "hand": [],
+            "draw_pile": [
+                {"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"},
+                {"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"},
+                {"id": "Strike_R", "name": "Strike", "cost": 1, "type": "ATTACK"},
+            ],
+            "potions": [{"id": "Swift Potion", "name": "迅捷药水"}],
+        }
+        plan_swift = self.solver.solve(combat_state_swift)
+        self.assertEqual(plan_swift.monsters_killed, 1)
+        self.assertEqual(plan_swift.projected_hp_loss, 0)
+        self.assertEqual(plan_swift.total_damage_dealt, 18)
+
+    def test_boss_state_machines_and_scaling(self):
+        """
+        验证 Boss 状态机与进阶难度数值：
+        1. 时光吞噬者 (Time Eater): 初始 counter 9 + 打出 3 张牌触发时光扭曲，回合终止且力量+2；
+        2. 觉醒者 (Awakened One): 一阶段 HP 归零触发二阶段重生 (清空负面、恢复满血、力量+2)；
+        3. 腐化之心 (Corrupt Heart): A20 进阶死之律动为 2、无敌上限 200。
+        """
+        # 1. 时光吞噬者：起始 counter 为 9，打出 3 张牌正好触发时光扭曲
+        combat_state_te = {
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 5},
+            "monsters": [{
+                "id": "TimeEater", "name": "Time Eater", "current_hp": 200, "max_hp": 456,
+                "intent": "ATTACK", "move_adjusted_damage": 10, "move_hits": 1,
+                "powers": [{"id": "Time Warp", "amount": 9}]
+            }],
+            "hand": [
+                {"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"},
+                {"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"},
+                {"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"},
+                {"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"},
+            ]
+        }
+        plan_te = self.solver.solve(combat_state_te)
+        # 最多只能打出 3 张牌即达到 12 上限终止！
+        self.assertLessEqual(len(plan_te.steps), 3)
+        self.assertIn("时光扭曲", plan_te.steps[2].notes)
+
+        # 2. 觉醒者二阶段重生
+        p_atk = SimPlayer(current_hp=80, max_hp=80, block=0, energy=2)
+        ao = SimMonster(index=0, id="AwakenedOne", name="Awakened One", current_hp=10, max_hp=300, block=0, awakened_phase=1, curiosity=1)
+        carnage = resolve_card_info({"id": "Carnage", "name": "Carnage", "cost": 2, "type": "ATTACK"})
+        _, m_res, step_ao, _, _, _ = self.solver._simulate_play_card(p_atk, [ao], 0, carnage, 0)
+        self.assertEqual(m_res[0].awakened_phase, 2)
+        self.assertEqual(m_res[0].current_hp, 300)
+        self.assertEqual(m_res[0].strength, 2)
+        self.assertIn("二阶段重生", step_ao.notes)
+
+        # 3. 腐化之心进阶 20 (Beat of Death = 2, Invincible = 200)
+        combat_state_heart = {
+            "ascension_level": 20,
+            "player": {"current_hp": 80, "max_hp": 80, "block": 0, "energy": 3},
+            "monsters": [{
+                "id": "CorruptHeart", "name": "Corrupt Heart", "current_hp": 750, "max_hp": 800,
+                "intent": "ATTACK", "move_adjusted_damage": 2, "move_hits": 15,
+                "powers": [{"id": "Invincible", "amount": 200}, {"id": "Beat of Death", "amount": 2}]
+            }],
+            "hand": [{"id": "Defend_R", "name": "Defend", "cost": 1, "type": "SKILL"}]
+        }
+        plan_heart = self.solver.solve(combat_state_heart)
+        self.assertIsNotNone(plan_heart)
+        # 打出一张牌触发死之律动 2 点直伤
+        self.assertIn("死之律动2伤", plan_heart.steps[0].notes)
+
 if __name__ == "__main__":
     unittest.main()

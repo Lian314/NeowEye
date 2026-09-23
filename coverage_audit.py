@@ -30,8 +30,18 @@ CARD_FIELD_SPECS = {
 }
 
 COMBAT_RELICS = {
-    "Anchor", "Incense Burner", "Kunai", "Orichalcum", "Ornamental Fan",
-    "Paper Crane", "Paper Frog", "Pen Nib", "StrikeDummy", "Shuriken",
+    "Anchor", "Bronze Scales", "Calipers", "Happy Flower", "Ice Cream",
+    "Incense Burner", "InkBottle", "Kunai", "Lantern", "Necronomicon",
+    "Nunchaku", "Orichalcum", "Ornamental Fan", "Paper Crane", "Paper Frog",
+    "Pen Nib", "Shuriken", "StrikeDummy", "Sundial", "Torii", "Unceasing Top",
+}
+
+COMBAT_POTIONS = {
+    "Block Potion", "Dexterity Potion", "Strength Potion", "Energy Potion",
+    "Fire Potion", "Explosive Potion", "Weak Potion", "FearPotion", "Poison Potion",
+    "Ancient Potion", "GhostInAJar", "LiquidBronze", "SteroidPotion", "SpeedPotion",
+    "FocusPotion", "EssenceOfSteel", "Swift Potion", "Fruit Juice", "BloodPotion",
+    "Health Potion", "FairyPotion", "Regen Potion",
 }
 
 
@@ -153,6 +163,11 @@ def build_report() -> Dict[str, Any]:
             "untranslated": untranslated_relics,
             "combat_simulated": sorted(COMBAT_RELICS),
         },
+        "potion_coverage": {
+            "simulated_count": len(COMBAT_POTIONS),
+            "total_count": len(_keys(_load_json("potions"))),
+            "simulated": sorted(COMBAT_POTIONS),
+        },
     }
 
 
@@ -160,6 +175,7 @@ def _render(report: Dict[str, Any]) -> str:
     source = report["source_counts"]
     cards = report["card_coverage"]
     relics = report["relic_coverage"]
+    potions = report["potion_coverage"]
     evidence_lines = [
         f"- {field}: {details['status']} "
         f"(L1={details['L1_data_parsed']}, "
@@ -186,6 +202,9 @@ def _render(report: Dict[str, Any]) -> str:
         "Relic coverage:",
         f"- Translated: {relics['translated_count']}/{source['relics']}",
         f"- Behaviour simulated in combat solver: {len(relics['combat_simulated'])}",
+        "",
+        "Potion coverage:",
+        f"- Simulated in combat solver: {potions['simulated_count']}/{potions['total_count']}",
         "",
         "Unresolved cards:",
         *unresolved_card_lines,
